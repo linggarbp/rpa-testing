@@ -11,7 +11,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Engine, formatLogLine } from './engine.js';
-import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS } from './model.js';
+import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS, MOBILE_ACTIONS, WORD_ACTIONS } from './model.js';
 import { AroRobot, ENGINE_CAPABILITIES } from './robot/aro.js';
 import { packProject, unpack } from './pack.js';
 import { importExport } from './import.js';
@@ -66,7 +66,8 @@ function values(flags: Flags, key: string): string[] {
 
 const HELP = `rpa-testing — a small, honest RPA toolkit
 
-  rpa run <workflow.json|package.rpapkg>  run a workflow (--headed, --var name=value, --report out.json)
+  rpa run <workflow.json|package.rpapkg>  run a workflow (--headed, --var name=value, --report out.json,
+                               --heal off|recommend|auto — what a failed target may recover to)
   rpa validate <workflow.json…>  validate without running
   rpa import <file.xaml|project.json> --out <dir>   convert a legacy export (writes PORTING-REPORT.md)
   rpa pack <dir> --out <file.rpapkg>  zip a project with a manifest (--entry, --name, --version)
@@ -77,6 +78,9 @@ const HELP = `rpa-testing — a small, honest RPA toolkit
   rpa hitl                     list pending human-in-the-loop questions
   rpa hitl answer <id> <value>  answer one (what hitl.ask waits for)
   rpa pick <url>               click an element, get its target JSON (--out target.json)
+  rpa record <url>             record a browser session into a draft workflow (--out draft.json,
+                               --max-seconds N, --headless)
+  rpa doctor                   check this machine (--profile default|robot|web, --out report.zip, --json)
   rpa ui                       the Studio in a browser (--project <dir>, --port N, --no-open)
   rpa robot --api <url> --project <id> [--api-key <key> | --robot-id <id> --robot-key <key>]
             [--name <host>] [--capabilities web,desktop,ocr] [--mode Attended|Unattended] [--once]
@@ -119,11 +123,18 @@ async function main(): Promise<number> {
           if (index > 0) overrides[pair.slice(0, index)] = pair.slice(index + 1);
         }
 
+        const healFlag = values(flags, 'heal')[0];
+        if (healFlag !== undefined && !['off', 'recommend', 'auto'].includes(healFlag)) {
+          console.error(`unknown --heal "${healFlag}" — pick off | recommend | auto.`);
+          return 2;
+        }
+
         const engine = new Engine({
           headless: flags.headed !== true,
           variables: overrides,
           // Paths inside the workflow are project-relative: invoke, config.load, files, the queue.
           baseDir: path.dirname(source),
+          ...(healFlag ? { heal: healFlag as 'off' | 'recommend' | 'auto' } : {}),
           onLog: (line) => {
             if (flags.json !== true) console.log(formatLogLine(line));
           }
@@ -136,9 +147,9 @@ async function main(): Promise<number> {
             await writeFile(report, JSON.stringify(result, null, 2));
             console.log(`report written to ${report}`);
           }
-          if (flags.json === true) console.log(JSON.stringify({ status: result.status, error: result.error, durationMs: result.durationMs, vars: result.vars }, null, 2));
+          if (flags.json === true) console.log(JSON.stringify({ status: result.status, error: result.error, durationMs: result.durationMs, vars: result.vars, heals: result.heals }, null, 2));
         }
-        console.log(`${result.status}${result.error ? ` — ${result.error}` : ''} (${result.stepsRun} step(s), ${result.durationMs} ms)`);
+        console.log(`${result.status}${result.error ? ` — ${result.error}` : ''} (${result.stepsRun} step(s), ${result.durationMs} ms)${result.heals.length > 0 ? ` · ${result.heals.length} heal(s)` : ''}`);
         return result.status === 'Passed' ? 0 : 1;
       } finally {
         if (cleanup) await cleanup();
@@ -206,11 +217,82 @@ async function main(): Promise<number> {
         ['desktop', DESKTOP_ACTIONS], ['ocr', OCR_ACTIONS], ['ai-vision', VISION_ACTIONS],
         ['queue', QUEUE_ACTIONS], ['file', FILE_ACTIONS], ['excel', EXCEL_ACTIONS],
         ['data', DATA_ACTIONS], ['config', CONFIG_ACTIONS], ['mail', MAIL_ACTIONS],
-        ['pdf', PDF_ACTIONS], ['gsheet', GSHEET_ACTIONS], ['hitl', HITL_ACTIONS]
+        ['pdf', PDF_ACTIONS], ['gsheet', GSHEET_ACTIONS], ['hitl', HITL_ACTIONS],
+        ['mobile', MOBILE_ACTIONS], ['word', WORD_ACTIONS]
       ];
       for (const [type, actions] of groups) console.log(`${type.padEnd(10)} ${actions.join(', ')}`);
-      console.log('\nEvery step also accepts: timeoutMs, retry, retryDelayMs, continueOnError, delayBeforeMs, delayAfterMs, saveAs.');
+      console.log('\nEvery step also accepts: timeoutMs, retry, retryDelayMs, continueOnError, delayBeforeMs, delayAfterMs, saveAs, heal (off|recommend|auto).');
       return 0;
+    }
+
+    case 'record': {
+      const url = positional[0];
+      if (!url) {
+        console.error('rpa record <url> --out <draft.json> [--max-seconds N] [--headless]');
+        return 2;
+      }
+      const out = values(flags, 'out')[0] ?? 'recorded.json';
+      const maxSeconds = Number(values(flags, 'max-seconds')[0] ?? 900);
+      let playwright: typeof import('playwright');
+      try {
+        playwright = await import('playwright');
+      } catch {
+        console.error('rpa record needs playwright: npm i playwright && npx playwright install chromium');
+        return 2;
+      }
+      const { startRecording } = await import('./recorder.js');
+      const browser = await playwright.chromium.launch({ headless: flags.headless === true });
+      try {
+        const page = await browser.newPage();
+        const recorder = await startRecording(page, { maxMs: Math.max(5, maxSeconds) * 1000 });
+        console.log(`recording ${url} — click through the page; Stop (bottom-right) ends it. ${flags.headless === true ? '' : 'The browser window is yours to drive.'}`.trim());
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        const recorded = await recorder.stop();
+        if (recorded.steps.length === 0) {
+          console.error('nothing was recorded.');
+          return 1;
+        }
+        const workflow = { name: `recorded: ${url}`, steps: recorded.steps.map((entry) => entry.step) };
+        const errors = validateWorkflow(parseWorkflow(JSON.stringify(workflow)));
+        if (errors.length > 0) {
+          console.error(`the draft did not validate (that is a recorder bug, please report it):\n${errors.join('\n')}`);
+          return 1;
+        }
+        await mkdir(path.dirname(path.resolve(out)), { recursive: true });
+        await writeFile(out, `${JSON.stringify(workflow, null, 2)}\n`);
+        for (const [index, entry] of recorded.steps.entries()) console.log(`${String(index + 1).padStart(2)}. ${entry.description}`);
+        for (const note of recorded.dropped) console.log(`    · ${note}`);
+        console.log(`\nrecorded ${recorded.steps.length} step(s) → ${out} — review it, then: rpa run ${out}`);
+        return 0;
+      } finally {
+        await browser.close().catch(() => {});
+      }
+    }
+
+    case 'doctor': {
+      const { runDoctor, DOCTOR_PROFILES } = await import('./doctor.js');
+      const profile = (values(flags, 'profile')[0] ?? 'default').toLowerCase();
+      if (!(DOCTOR_PROFILES as readonly string[]).includes(profile)) {
+        console.error(`unknown profile "${profile}" — pick one of: ${DOCTOR_PROFILES.join(', ')}`);
+        return 2;
+      }
+      const out = values(flags, 'out')[0];
+      const report = await runDoctor({
+        profile: profile as (typeof DOCTOR_PROFILES)[number],
+        ...(values(flags, 'project')[0] ? { projectDir: values(flags, 'project')[0]! } : {}),
+        ...(out ? { out } : {})
+      });
+      if (flags.json === true) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        for (const collector of report.collectors) {
+          console.log(`${collector.status.padEnd(4)} ${collector.name}`);
+          for (const [key, value] of Object.entries(collector.facts)) console.log(`       ${key}: ${value}`);
+          for (const note of collector.notes) console.log(`       · ${note}`);
+        }
+        console.log(`\nprofile ${report.profile} — ${report.collectors.length} collector(s), ${report.summary.warnings} warning(s), ${report.summary.problems} problem(s)${out ? ` · ${out}` : ''}`);
+      }
+      return report.summary.problems > 0 ? 1 : 0;
     }
 
     case 'queue': {

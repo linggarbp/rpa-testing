@@ -8,7 +8,18 @@
  */
 
 export type StepType = 'web' | 'control' | 'api' | 'desktop' | 'ocr' | 'ai-vision'
-  | 'queue' | 'file' | 'excel' | 'data' | 'config' | 'mail' | 'pdf' | 'gsheet' | 'hitl';
+  | 'queue' | 'file' | 'excel' | 'data' | 'config' | 'mail' | 'pdf' | 'gsheet' | 'hitl'
+  | 'mobile' | 'word';
+
+/**
+ * What happens when every declared targeting method failed:
+ *
+ * - `off`       — fail the step (the historical behaviour).
+ * - `recommend` — fail it, but run one healing pass and report what would have matched. The default:
+ *                 a failure stays a failure, and it arrives with a fix attached.
+ * - `auto`      — use the healed match and continue; the log and the run report say it happened.
+ */
+export type HealMode = 'off' | 'recommend' | 'auto';
 
 /** What `target` accepts: the targeting methods, in the order they are tried. */
 export interface TargetSpec {
@@ -30,6 +41,10 @@ export interface TargetSpec {
   textExact?: boolean;
   /** The application window a selector chain was scoped to (informational: logged, not matched). */
   scope?: Record<string, string>;
+  /** Recovery when every method above fails. Defaults to the step's or the engine's mode. */
+  heal?: HealMode;
+  /** Minimum score (0..1) a healed candidate must reach. Default 0.75. */
+  healThreshold?: number;
 }
 
 /** Post-action verification: wait for a target after the action ran. */
@@ -74,6 +89,9 @@ export interface Step {
   /** Post-action verification: wait for a target after the action ran. */
   verify?: VerifySpec;
 
+  /** Recovery mode for this step's target (see TargetSpec.heal). Overrides the engine default. */
+  heal?: HealMode;
+
   /** Per-step resilience, shared by every step type: timeout, delays, continue-on-error, retry. */
   timeoutMs?: number;
   retry?: number;
@@ -110,7 +128,7 @@ export const CONTROL_ACTIONS = [
   'delay', 'setVar', 'math', 'log', 'if', 'switch', 'repeat', 'while', 'foreach',
   'try', 'throw', 'retryScope', 'invoke', 'stateMachine'
 ] as const;
-export const API_ACTIONS = ['request'] as const;
+export const API_ACTIONS = ['request', 'load'] as const;
 export const DESKTOP_ACTIONS = [
   'move', 'click', 'doubleClick', 'rightClick', 'type', 'scroll', 'pressKey', 'drag',
   'clipboardCopy', 'screenshot', 'waitForImage', 'clickImage', 'uia'
@@ -127,6 +145,10 @@ export const MAIL_ACTIONS = ['send', 'receive'] as const;
 export const PDF_ACTIONS = ['readText'] as const;
 export const GSHEET_ACTIONS = ['append', 'read'] as const;
 export const HITL_ACTIONS = ['ask'] as const;
+/** Mobile over the raw WebDriver protocol — Appium answers it; so does Selenium. */
+export const MOBILE_ACTIONS = ['session', 'end', 'tap', 'type', 'getText', 'waitFor', 'swipe', 'screenshot'] as const;
+/** Word documents — .docx is a zip of XML; read and written with the stdlib. */
+export const WORD_ACTIONS = ['readText', 'writeText'] as const;
 
 const ACTIONS: Record<StepType, readonly string[]> = {
   web: WEB_ACTIONS,
@@ -143,7 +165,9 @@ const ACTIONS: Record<StepType, readonly string[]> = {
   mail: MAIL_ACTIONS,
   pdf: PDF_ACTIONS,
   gsheet: GSHEET_ACTIONS,
-  hitl: HITL_ACTIONS
+  hitl: HITL_ACTIONS,
+  mobile: MOBILE_ACTIONS,
+  word: WORD_ACTIONS
 };
 
 /**
@@ -165,7 +189,9 @@ const ACTION_ALIASES: Record<StepType, Record<string, string>> = {
   mail: { sendmail: 'send', sendmailmessage: 'send', getsmtpmail: 'send', getimapmail: 'receive', getoutlookmail: 'receive', getexchange: 'receive' },
   pdf: { readpdftext: 'readText' },
   gsheet: { writersheet: 'append', appendsheet: 'append', googlesheets: 'append', gsuiteapplication: 'append' },
-  hitl: { inputdialog: 'ask', formtask: 'ask', waitforformtask: 'ask' }
+  hitl: { inputdialog: 'ask', formtask: 'ask', waitforformtask: 'ask' },
+  mobile: { start: 'session', close: 'end', click: 'tap', setvalue: 'type', scroll: 'swipe', screenshot: 'screenshot' },
+  word: { readdocx: 'readText', writedocx: 'writeText', readdocument: 'readText', writedocument: 'writeText' }
 };
 
 export function normalizeAction(action: string | undefined, type: StepType): string {
@@ -352,6 +378,32 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
       if (String(step.range ?? '').trim() === '') errors.push(`${name} needs a "range", e.g. "Sheet1!A1".`);
     }
 
+    if (step.type === 'api' && action === 'load' && String(step.url ?? '').trim() === '') {
+      errors.push(`${name} (api.load) needs a "url".`);
+    }
+
+    if (step.type === 'mobile') {
+      if (action === 'session') {
+        const capabilities = step.capabilities;
+        if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities) || Object.keys(capabilities).length === 0) {
+          errors.push(`${name} (mobile.session) needs "capabilities" — e.g. { platformName: "Android", app: … }.`);
+        }
+      }
+      if (['tap', 'type', 'getText', 'waitFor'].includes(action)) {
+        if (String(step.using ?? '').trim() === '') errors.push(`${name} (mobile.${action}) needs "using" — accessibility id | id | xpath | class name.`);
+        if (String(step.value ?? '').trim() === '') errors.push(`${name} (mobile.${action}) needs "value" — the element to find.`);
+      }
+      if (action === 'type' && step.text === undefined) errors.push(`${name} (mobile.type) needs "text".`);
+      if (action === 'swipe' && !['left', 'right', 'up', 'down'].includes(String(step.direction ?? ''))) {
+        errors.push(`${name} (mobile.swipe) needs "direction" = left | right | up | down.`);
+      }
+    }
+
+    if (step.type === 'word') {
+      if (String(step.path ?? '').trim() === '') errors.push(`${name} needs a "path" to a .docx.`);
+      if (action === 'writeText' && String(step.text ?? '') === '') errors.push(`${name} (word.writeText) needs "text".`);
+    }
+
     if (step.type === 'hitl' && String(step.prompt ?? '').trim() === '') errors.push(`${name} needs a "prompt".`);
 
     if (step.type === 'control' && action === 'stateMachine') {
@@ -370,6 +422,15 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
     if (step.type === 'desktop' && action === 'uia') {
       const finds = ['name', 'automationId', 'controlType'].filter((key) => String(step[key] ?? '').trim() !== '');
       if (finds.length === 0) errors.push(`${name} needs name, automationId or controlType to find the element.`);
+    }
+
+    const healModes = ['off', 'recommend', 'auto'];
+    if (step.heal !== undefined && !healModes.includes(String(step.heal))) {
+      errors.push(`${name} has an unknown heal mode "${String(step.heal)}" (off | recommend | auto).`);
+    }
+    const targetHeal = (step.target as { heal?: unknown } | undefined)?.heal;
+    if (targetHeal !== undefined && !healModes.includes(String(targetHeal))) {
+      errors.push(`${name} › target has an unknown heal mode "${String(targetHeal)}" (off | recommend | auto).`);
     }
 
     // A targeting action without any target can only fail at run time; say so now.

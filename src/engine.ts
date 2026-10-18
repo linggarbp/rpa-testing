@@ -12,13 +12,15 @@
  */
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Browser, Page } from 'playwright';
-import { normalizeAction, parseWorkflow, validateWorkflow, type Step, type Workflow } from './model.js';
+import type { Browser, Locator, Page } from 'playwright';
+import { normalizeAction, parseWorkflow, validateWorkflow, type HealMode, type Step, type TargetSpec, type Workflow } from './model.js';
 import {
   QueueStore, deleteFile, ensureDir, fileExists, listFiles, loadSettings, moveFile, readTable, writeTable
 } from './store.js';
 import { appendSheet, askHuman, readPdfText, readSheet, receiveMail, runUia, sendMail } from './gaps.js';
-import { describeTarget, resolveTarget, targetFromStep } from './targeting.js';
+import { describeTarget, healTarget, resolveTarget, targetFromStep } from './targeting.js';
+import { WebDriverClient } from './webdriver.js';
+import { buildDocx, readDocx } from './word.js';
 
 /** An exception a workflow raised on purpose — business vs application classification. */
 export class RpaError extends Error {
@@ -58,6 +60,13 @@ export interface EngineOptions {
    * directory; a robot passes its working directory.
    */
   baseDir?: string;
+  /**
+   * The run's healing cap — a step may ask for less healing than the cap allows, never more. `off`
+   * therefore disables healing everywhere: the flag to reach for when a failure must be seen
+   * plainly. Steps that declare nothing take the cap; with no flag at all the default is
+   * `recommend` — failures keep failing, and a candidate fix rides along in the error and report.
+   */
+  heal?: HealMode;
 }
 
 export interface RunHooks {
@@ -65,11 +74,28 @@ export interface RunHooks {
   isCancelled?: () => Promise<boolean>;
 }
 
+/** One healing event in a run — whether it was applied (`auto`) or only suggested (`recommend`). */
+export interface HealRecord {
+  /** The step's label, e.g. `3 › if › then.2`. */
+  step: string;
+  mode: HealMode;
+  /** true when the step continued on the healed match; false when it only failed with a suggestion. */
+  applied: boolean;
+  /** The target as declared, one line. */
+  from: string;
+  /** The target that resolves to the healed element — paste it back into the workflow. */
+  to: TargetSpec;
+  method: 'relaxed-fuzzy' | 'resemblance';
+  score: number;
+}
+
 export interface RunResult {
   status: 'Passed' | 'Failed';
   error?: string;
   logs: LogLine[];
   vars: Record<string, unknown>;
+  /** Every heal that fired during the run, in order. Empty when nothing needed one. */
+  heals: HealRecord[];
   durationMs: number;
   stepsRun: number;
 }
@@ -99,6 +125,8 @@ export class Engine {
   private readonly queues: QueueStore;
   private browser: Browser | undefined;
   private page: Page | undefined;
+  /** The open mobile session (raw WebDriver), closed with the run like the browser is. */
+  private webdriver: WebDriverClient | undefined;
   private deadline = 0;
   private stepsRun = 0;
   private runDirCreated = false;
@@ -109,6 +137,12 @@ export class Engine {
   private readonly projectDir: string;
   /** Guards `invoke` against a workflow that calls itself in a cycle. */
   private invokeDepth = 0;
+  /** Every heal that fired, reported with the run. */
+  private readonly heals: HealRecord[] = [];
+  /** The step currently executing, and how many retries are still ahead of it (heal context). */
+  private currentStep?: Step;
+  private currentLabel = '';
+  private retryRemaining = 0;
 
   constructor(options: EngineOptions = {}) {
     this.options = options;
@@ -147,6 +181,8 @@ export class Engine {
       if (this.browser) await this.browser.close().catch(() => {});
       this.browser = undefined;
       this.page = undefined;
+      if (this.webdriver) await this.webdriver.end().catch(() => {});
+      this.webdriver = undefined;
     }
 
     return {
@@ -154,6 +190,7 @@ export class Engine {
       ...(failure ? { error: failure } : {}),
       logs: this.logs,
       vars: this.vars,
+      heals: this.heals,
       durationMs: Date.now() - startedAt,
       stepsRun: this.stepsRun
     };
@@ -187,26 +224,39 @@ export class Engine {
     const before = this.duration(step.delayBeforeMs, 0);
     if (before > 0) await delay(before);
 
+    // Heal context: which step this is, and how many retries are still ahead. Healing waits for the
+    // final attempt — a retry that is about to re-run the same target is not evidence yet.
+    const previous = { step: this.currentStep, label: this.currentLabel, retryRemaining: this.retryRemaining };
+    this.currentStep = step;
+    this.currentLabel = label;
+
     const attempts = this.duration(step.retry, 0, 5) + 1;
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await this.executeStep(step, hooks);
-        this.stepsRun++;
-        break;
-      } catch (e) {
-        const message = (e as Error).message;
-        if (attempt < attempts) {
-          const backoff = this.duration(step.retryDelayMs, 500);
-          await this.log('warn', `Step ${label} failed (attempt ${attempt}/${attempts}): ${message} — retrying in ${backoff}ms`);
-          await delay(backoff);
-          continue;
-        }
-        if (step.continueOnError === true) {
-          await this.log('error', `Step ${label} failed and continueOnError is set: ${message} — continuing.`);
+    try {
+      for (let attempt = 1; ; attempt++) {
+        this.retryRemaining = attempts - attempt;
+        try {
+          await this.executeStep(step, hooks);
+          this.stepsRun++;
           break;
+        } catch (e) {
+          const message = (e as Error).message;
+          if (attempt < attempts) {
+            const backoff = this.duration(step.retryDelayMs, 500);
+            await this.log('warn', `Step ${label} failed (attempt ${attempt}/${attempts}): ${message} — retrying in ${backoff}ms`);
+            await delay(backoff);
+            continue;
+          }
+          if (step.continueOnError === true) {
+            await this.log('error', `Step ${label} failed and continueOnError is set: ${message} — continuing.`);
+            break;
+          }
+          throw e;
         }
-        throw e;
       }
+    } finally {
+      this.currentStep = previous.step;
+      this.currentLabel = previous.label;
+      this.retryRemaining = previous.retryRemaining;
     }
 
     const after = this.duration(step.delayAfterMs, 0);
@@ -245,6 +295,10 @@ export class Engine {
         return this.runGsheet(step);
       case 'hitl':
         return this.runHitl(step);
+      case 'mobile':
+        return this.runMobile(step);
+      case 'word':
+        return this.runWord(step);
       default:
         throw new Error(`Unknown step type: ${step.type}`);
     }
@@ -271,7 +325,7 @@ export class Engine {
     const log = (message: string) => this.log('info', message);
     const resolve = async () => {
       if (!target) throw new Error(`web.${String(step.action)} needs a selector or a target.`);
-      return resolveTarget(page, target, { timeoutMs: timeout, log });
+      return this.resolveWithHeal(page, target, step, timeout, log);
     };
 
     switch (normalizeAction(step.action, 'web')) {
@@ -325,7 +379,10 @@ export class Engine {
         break;
       }
       case 'waitForElement': {
-        const element = await resolve();
+        // A wait is a check, not an interaction: it stays strict on purpose — healing it would
+        // change what is being awaited. The interactions above are the ones that heal.
+        if (!target) throw new Error('web.waitForElement needs a selector or a target.');
+        const element = await resolveTarget(page, target, { timeoutMs: timeout, log });
         await element.waitFor({ state: (step.state as 'visible' | 'attached') ?? 'visible', timeout });
         break;
       }
@@ -383,6 +440,76 @@ export class Engine {
         throw new Error(`Unknown web action: ${step.action}`);
     }
     if (step.verify) await this.verifyAfter(page, step, timeout);
+  }
+
+  /**
+   * Resolve a target for an interaction, healing when every declared method failed:
+   *
+   * - `off`       — unchanged failure;
+   * - `recommend` (default) — fail, but the candidate the healing pass found is logged and appended
+   *   to the error, so the fix is one paste away;
+   * - `auto`      — act on the healed element and continue; the log line and the run's `heals`
+   *   record say which target was healed to what.
+   *
+   * Healing is skipped while retries remain (the retry has not happened yet). Checks — waits,
+   * `elementExists`, `verify` — never heal; see runWeb.
+   */
+  private async resolveWithHeal(
+    page: Page,
+    target: TargetSpec,
+    step: Step,
+    timeoutMs: number,
+    log: (message: string) => void | Promise<void>
+  ): Promise<Locator> {
+    try {
+      return await resolveTarget(page, target, { timeoutMs, log });
+    } catch (e) {
+      const mode = this.healModeFor(target, step);
+      if (mode === 'off') throw e;
+      if (this.retryRemaining > 0) {
+        await this.log('info', `heal skipped: ${this.retryRemaining} retry attempt(s) still ahead`);
+        throw e;
+      }
+
+      const outcome = await healTarget(page, target, {
+        ...(target.healThreshold !== undefined ? { threshold: target.healThreshold } : {})
+      });
+      if (!outcome) {
+        await this.log('info', 'heal: no candidate reached the healing threshold — nothing to suggest');
+        throw e;
+      }
+
+      this.heals.push({
+        step: this.currentLabel,
+        mode,
+        applied: mode === 'auto',
+        from: describeTarget(target),
+        to: outcome.target,
+        method: outcome.method,
+        score: Number(outcome.score.toFixed(2))
+      });
+
+      if (mode === 'auto') {
+        await this.log('warn', `target healed after every method failed — ${outcome.detail}`);
+        return outcome.locator;
+      }
+      await this.log('warn', `heal suggestion for step ${this.currentLabel}: ${outcome.detail} (set "heal": "auto" on the step to apply it)`);
+      throw new Error(`${(e as Error).message}\nheal suggestion: ${JSON.stringify(outcome.target)} (${outcome.method}, score ${outcome.score.toFixed(2)})`);
+    }
+  }
+
+  private healModeFor(target: TargetSpec, step: Step): HealMode {
+    // The engine's flag is a cap: a step may ask for less healing than the run allows, never more
+    // (`off` at the engine level therefore disables healing everywhere). Steps that declare nothing
+    // take the cap, and without a flag the default is `recommend`.
+    const rank: Record<HealMode, number> = { off: 0, recommend: 1, auto: 2 };
+    const declared = [target.heal, step.heal].find(
+      (value): value is HealMode => value === 'off' || value === 'recommend' || value === 'auto'
+    );
+    const flag = this.options.heal;
+    const wanted: HealMode = declared ?? flag ?? 'recommend';
+    if (flag === undefined) return wanted;
+    return rank[wanted] <= rank[flag] ? wanted : flag;
   }
 
   /**
@@ -1046,6 +1173,7 @@ export class Engine {
   // ── API / OCR / AI vision ─────────────────────────────────────────────────────────────────────
 
   private async runApi(step: Step): Promise<void> {
+    if (normalizeAction(step.action, 'api') === 'load') return this.runApiLoad(step);
     const url = this.interp(String(step.url ?? ''));
     if (!url) throw new Error('api.request needs a "url".');
     const method = String(step.method ?? 'GET').toUpperCase();
@@ -1060,6 +1188,244 @@ export class Engine {
       throw new Error(`API ${method} ${url} returned ${response.status}, expected ${step.assertStatus}`);
     }
     await this.log('info', `API ${method} ${url} → ${response.status}`);
+  }
+
+  /**
+   * `api.load` — a smoke-shaped load check, deliberately small: VUs × iterations (a duration also
+   * caps it), latency percentiles, error rate. It is not a load-testing platform; it answers "does
+   * this endpoint hold up before the bot leans on it", from inside a workflow, with real numbers.
+   * A non-2xx never throws here — it is counted, because that is the measurement.
+   */
+  private async runApiLoad(step: Step): Promise<void> {
+    const url = this.interp(String(step.url ?? ''));
+    if (!url) throw new Error('api.load needs a "url".');
+    const method = String(step.method ?? 'GET').toUpperCase();
+    const vus = Math.min(Math.max(Math.floor(Number(step.vus) || 1), 1), 50);
+    let iterations = Math.max(Math.floor(Number(step.iterations) || 0), 0);
+    const durationMs = Math.max(Math.floor(Number(step.durationMs) || 0), 0);
+    if (iterations === 0 && durationMs === 0) iterations = 10;
+
+    const init: RequestInit = { method };
+    if (step.headers) init.headers = step.headers as Record<string, string>;
+    if (step.body !== undefined) init.body = typeof step.body === 'string' ? this.interp(step.body) : JSON.stringify(step.body);
+
+    const timeoutMs = this.duration(step.timeoutMs, 30000, 300000);
+    const expect = Number.isFinite(Number(step.expectStatus)) ? Number(step.expectStatus) : undefined;
+
+    let issued = 0;
+    let errors = 0;
+    const latencies: number[] = [];
+    const startedAt = Date.now();
+    const deadline = durationMs > 0 ? startedAt + durationMs : Number.POSITIVE_INFINITY;
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (iterations > 0 && issued >= iterations) return;
+        if (durationMs > 0 && Date.now() >= deadline) return;
+        issued++;
+        const requestStarted = Date.now();
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            const response = await fetch(url, { ...init, signal: controller.signal });
+            await response.arrayBuffer(); // consume the body: a stream nobody reads is not a finished request
+            if (expect !== undefined && response.status !== expect) errors++;
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch {
+          errors++;
+        }
+        latencies.push(Date.now() - requestStarted);
+      }
+    };
+    await Promise.all(Array.from({ length: vus }, () => worker()));
+
+    const elapsedMs = Math.max(Date.now() - startedAt, 1);
+    latencies.sort((a, b) => a - b);
+    const percentile = (p: number): number => {
+      if (latencies.length === 0) return 0;
+      const index = Math.min(latencies.length - 1, Math.max(0, Math.ceil((p / 100) * latencies.length) - 1));
+      return latencies[index]!;
+    };
+    const stats = {
+      url,
+      method,
+      vus,
+      requested: issued,
+      errors,
+      durationMs: elapsedMs,
+      rps: Number((issued / (elapsedMs / 1000)).toFixed(1)),
+      latencyMs: {
+        min: latencies[0] ?? 0,
+        avg: latencies.length > 0 ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : 0,
+        p50: percentile(50),
+        p95: percentile(95),
+        p99: percentile(99),
+        max: latencies[latencies.length - 1] ?? 0
+      }
+    };
+    const name = String(step.saveAs ?? 'load');
+    this.vars[name] = JSON.stringify(stats);
+    this.vars[`${name}.p95`] = String(stats.latencyMs.p95);
+    this.vars[`${name}.errors`] = String(errors);
+    await this.log(
+      'info',
+      `api.load ${method} ${url} → ${issued} request(s) in ${elapsedMs} ms (${stats.rps} rps), p50 ${stats.latencyMs.p50} ms, p95 ${stats.latencyMs.p95} ms, ${errors} error(s)`
+    );
+  }
+
+  // ── Mobile (raw WebDriver → Appium, Selenium, chromedriver) ────────────────────────────────────
+
+  private async runMobile(step: Step): Promise<void> {
+    switch (normalizeAction(step.action, 'mobile')) {
+      case 'session': {
+        const server = this.interp(String(step.server ?? '')) || 'http://127.0.0.1:4723';
+        const capabilities = (step.capabilities ?? {}) as Record<string, unknown>;
+        const client = await WebDriverClient.start({
+          server,
+          capabilities,
+          timeoutMs: this.duration(step.timeoutMs, 60000, 600000)
+        });
+        this.webdriver = client;
+        if (step.saveAs) this.vars[String(step.saveAs)] = client.id ?? '';
+        await this.log('info', `mobile.session ${server} → ${client.id} (${String(capabilities['platformName'] ?? '?')})`);
+        break;
+      }
+      case 'end': {
+        if (!this.webdriver) throw new Error('mobile.end: no session is open.');
+        await this.webdriver.end();
+        this.webdriver = undefined;
+        await this.log('info', 'mobile.end → session closed');
+        break;
+      }
+      case 'tap': {
+        const client = this.mobileSession();
+        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
+        await client.click(element);
+        await this.log('info', `mobile.tap ${String(step.using)}=${this.interp(String(step.value))} → ok`);
+        break;
+      }
+      case 'type': {
+        const client = this.mobileSession();
+        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
+        if (step.clear !== false) await client.clear(element);
+        const text = this.interp(String(step.text ?? ''));
+        await client.type(element, text);
+        await this.log('info', `mobile.type ${String(step.using)}=${this.interp(String(step.value))} ← ${text.length} char(s)`);
+        break;
+      }
+      case 'getText': {
+        const client = this.mobileSession();
+        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
+        const text = await client.text(element);
+        await this.save(step, text, `mobile.getText ${String(step.using)}=${this.interp(String(step.value))} → "${text.slice(0, 60)}"`);
+        break;
+      }
+      case 'waitFor': {
+        const client = this.mobileSession();
+        const using = this.interp(String(step.using));
+        const value = this.interp(String(step.value));
+        const timeout = this.duration(step.timeoutMs, 10000, 300000);
+        const wantVisible = step.state !== 'exists';
+        const deadline = Date.now() + timeout;
+        let found = false;
+        let lastError = '';
+        while (Date.now() <= deadline) {
+          try {
+            const element = await client.find(using, value);
+            if (!wantVisible || (await client.displayed(element))) { found = true; break; }
+          } catch (e) {
+            lastError = (e as Error).message;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 300));
+        }
+        if (!found) {
+          throw new Error(`mobile.waitFor ${using}=${value} → not found within ${timeout}ms${lastError ? ` (${lastError.slice(0, 120)})` : ''}`);
+        }
+        await this.log('info', `mobile.waitFor ${using}=${value} → ok`);
+        break;
+      }
+      case 'swipe': {
+        const client = this.mobileSession();
+        const rect = await client.windowRect();
+        const width = rect.width || 1080;
+        const height = rect.height || 1920;
+        const distance = Math.min(
+          Math.max(Math.floor(Number(step.distance) || Math.round(Math.min(width, height) * 0.5)), 50),
+          Math.max(width, height)
+        );
+        const duration = this.duration(step.durationMs, 500, 5000);
+        const center = { x: Math.round(width / 2), y: Math.round(height / 2) };
+        const start = { ...center };
+        const end = { ...center };
+        const direction = String(step.direction);
+        const half = Math.round(distance / 2);
+        if (direction === 'left') { start.x = center.x + half; end.x = center.x - half; }
+        if (direction === 'right') { start.x = center.x - half; end.x = center.x + half; }
+        if (direction === 'up') { start.y = center.y + half; end.y = center.y - half; }
+        if (direction === 'down') { start.y = center.y - half; end.y = center.y + half; }
+        await client.actions([
+          {
+            type: 'pointer',
+            id: 'finger1',
+            parameters: { pointerType: 'touch' },
+            actions: [
+              { type: 'pointerMove', duration: 0, x: Math.round(start.x), y: Math.round(start.y) },
+              { type: 'pointerDown', button: 0 },
+              { type: 'pointerMove', duration, x: Math.round(end.x), y: Math.round(end.y) },
+              { type: 'pointerUp', button: 0 }
+            ]
+          }
+        ]);
+        await this.log('info', `mobile.swipe ${direction} ${distance}px in ${duration}ms (screen ${width}x${height})`);
+        break;
+      }
+      case 'screenshot': {
+        const client = this.mobileSession();
+        const base64 = await client.screenshot();
+        const declared = this.interp(String(step.path ?? ''));
+        const file = declared !== ''
+          ? path.resolve(this.projectDir, declared)
+          : await this.defaultScreenshot(`mobile-${this.stepsRun + 1}`);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, Buffer.from(base64, 'base64'));
+        await this.log('info', `mobile screenshot saved to ${file}`);
+        break;
+      }
+      default:
+        throw new Error(`Unknown mobile action: ${step.action}`);
+    }
+  }
+
+  private mobileSession(): WebDriverClient {
+    if (!this.webdriver) throw new Error('mobile: no session is open — add a mobile.session step first.');
+    return this.webdriver;
+  }
+
+  // ── Word (.docx over the stdlib zip + XML) ─────────────────────────────────────────────────────
+
+  private async runWord(step: Step): Promise<void> {
+    const file = path.resolve(this.projectDir, this.interp(String(step.path ?? '')));
+    switch (normalizeAction(step.action, 'word')) {
+      case 'readText': {
+        const text = await readDocx(file);
+        const paragraphs = text === '' ? 0 : text.split('\n').length;
+        await this.save(step, text, `word.readText ${path.basename(file)} → ${text.length} char(s), ${paragraphs} paragraph(s)`);
+        break;
+      }
+      case 'writeText': {
+        const text = this.interp(String(step.text ?? ''));
+        const buffer = buildDocx(text);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, buffer);
+        await this.log('info', `word.writeText ${path.basename(file)} ← ${text.length} char(s), ${buffer.length} bytes`);
+        break;
+      }
+      default:
+        throw new Error(`Unknown word action: ${step.action}`);
+    }
   }
 
   private async runOcr(step: Step): Promise<void> {

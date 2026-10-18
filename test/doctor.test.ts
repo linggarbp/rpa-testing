@@ -13,7 +13,7 @@ import { readArchive } from '../src/project/pack.js';
 
 test('the default profile reports runtime, dependencies and tools as one JSON object', async () => {
   const report = await runDoctor();
-  assert.equal(report.tool, 'rpa-testing');
+  assert.equal(report.tool, 'nutjs-testing');
   assert.equal(report.profile, 'default');
   assert.ok(report.generatedAt.length > 0);
   assert.deepEqual(
@@ -76,7 +76,7 @@ test('--out writes .json plain and .zip as a one-entry archive', async () => {
   const fromJson = await runDoctor({ out: jsonOut });
   const written = JSON.parse(await readFile(jsonOut, 'utf8')) as typeof fromJson;
   assert.equal(written.generatedAt, fromJson.generatedAt);
-  assert.equal(written.tool, 'rpa-testing');
+  assert.equal(written.tool, 'nutjs-testing');
 
   const zipOut = path.join(dir, 'report.zip');
   const fromZip = await runDoctor({ out: zipOut });

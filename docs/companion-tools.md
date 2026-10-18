@@ -61,17 +61,18 @@ your issue"), per-collector selection before export, and a collect-and-zip actio
 
 Adopted as `rpa doctor`:
 
-- collectors: `runtime`, `dependencies` (which optional modules unlock which capability), `web`
-  (playwright + chromium executable), `session` (display/wayland, macOS permissions note), `tools`
-  (pdftotext, PowerShell), `project` (workflow validation + writability);
-- profiles: `default | web | robot` select the set;
+- collectors: `runtime`, `dependencies` (which optional modules unlock which capability), `desktop`
+  (which backend answered, and the reason each other one did not — see docs/desktop-backends.md),
+  `session` (display/wayland, macOS permissions note), `tools` (pdftotext, PowerShell), `project`
+  (workflow validation + writability);
+- profiles: `default | desktop | robot` select the set;
 - `--out report.zip` writes a one-entry archive (our own zip code, `src/project/pack.ts`); `--out *.json`
   writes it plain; `--json` prints it.
 
 Cross-platform by construction: platform differences appear as facts in the report, never as
 crashes. Code: `src/services/doctor.ts`. Tests: `test/doctor.test.ts`.
 
-## Adopted: the web recorder (`rpa record`)
+## Adopted, then dropped with its lane: the page recorder
 
 Observed model (REA's JavaScript application graph over the recorder's Electron app — evidence
 `ev_08052d0d…`: 541 parsed files, 146 424 AST nodes, 5 170 findings, 540 modules; boundary summary:
@@ -87,7 +88,10 @@ Observed model (REA's JavaScript application graph over the recorder's Electron 
 - output mappers: Workflow-file export, Word/HTML/CSV exporters, and a document format with explicit
   version upgrades.
 
-Adopted as `rpa record` (web only, deliberately small):
+Adopted as `rpa record` (page only, deliberately small), and **removed again** when this toolkit
+became desktop-only — the code went with the lane rather than sitting unused. What the analysis is
+still good for is the OS-level recorder on the roadmap (`docs/design.md`), where the same filter
+instincts apply and the capture comes from the desktop instead of the DOM:
 
 - captures click / text input / select change / navigation from the page itself;
 - the same filter instincts: double-clicks collapse, our own overlay and an `ignoreSelectors` list

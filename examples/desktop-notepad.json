@@ -1,0 +1,32 @@
+{
+  "name": "desktop-notepad",
+  "description": "Windows: drive Notepad by the properties the accessibility API knows it by (uia), then verify the app reacted. On Linux or macOS swap the uia targets for image or fuzzy ones — see docs/desktop-backends.md.",
+  "arguments": {
+    "line": { "required": true, "description": "the text to type into the note" }
+  },
+  "steps": [
+    { "type": "control", "action": "log", "message": "typing ${line} into the focused Notepad window" },
+    {
+      "type": "desktop",
+      "action": "uia",
+      "uiaAction": "focus",
+      "name": "Text editor",
+      "controlType": "Document",
+      "comment": "focus the edit area first — typing goes to whatever has focus",
+      "retry": 2,
+      "retryDelayMs": 500
+    },
+    { "type": "desktop", "action": "type", "text": "${line}" },
+    {
+      "type": "desktop",
+      "action": "uia",
+      "uiaAction": "getText",
+      "name": "Text editor",
+      "controlType": "Document",
+      "saveAs": "noteText",
+      "comment": "read it back: the accessibility API is also the cheapest assertion"
+    },
+    { "type": "control", "action": "log", "message": "note now reads: ${noteText}" },
+    { "type": "desktop", "action": "screenshot", "path": "evidence", "fileName": "note" }
+  ]
+}

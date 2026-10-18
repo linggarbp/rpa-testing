@@ -357,7 +357,7 @@ async function main(): Promise<number> {
         ...(values(flags, 'api-key')[0] ? { apiKey: values(flags, 'api-key')[0]! } : {}),
         ...(values(flags, 'robot-id')[0] ? { robotId: values(flags, 'robot-id')[0]! } : {}),
         ...(values(flags, 'robot-key')[0] ? { robotKey: values(flags, 'robot-key')[0]! } : {}),
-        name: values(flags, 'name')[0] ?? process.env.HOSTNAME ?? 'rpa-testing',
+        name: values(flags, 'name')[0] ?? process.env.HOSTNAME ?? 'nutjs-testing',
         mode: values(flags, 'mode')[0] ?? 'Unattended',
         capabilities: (values(flags, 'capabilities')[0] ?? ENGINE_CAPABILITIES.join(',')).split(',').map((c) => c.trim()).filter(Boolean),
         headless: flags.headed !== true

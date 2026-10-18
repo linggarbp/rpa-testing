@@ -1,9 +1,9 @@
 {
-  "name": "rpa-testing",
+  "name": "nutjs-testing",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "rpa-testing — a personal RPA toolkit: JSON workflows, a step engine, a local Studio UI, and a robot client for an orchestrator.",
+  "description": "nutjs-testing — a desktop automation toolkit: JSON workflows, a step engine that drives the real screen through pluggable backends, a local Studio, and a robot client for an orchestrator.",
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"

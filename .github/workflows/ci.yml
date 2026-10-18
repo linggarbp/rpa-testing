@@ -23,20 +23,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Chromium (web steps)
+      - name: Install Chromium (the Studio's own end-to-end test)
         run: npx playwright install --with-deps chromium
 
-      - name: Install poppler (pdf.readText)
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - name: Install the desktop lane's tools (pdf, a virtual display, X11 input, capture)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils xvfb xdotool imagemagick
 
-      - name: Tests (type-check, unit, chromium E2E, UI E2E, robot protocol)
-        run: npm test
+      # The desktop steps are proved, not mocked: under Xvfb the OS backend really moves the
+      # pointer and really writes a PNG, and the test reads the file back.
+      - name: Tests (type-check, unit, desktop I/O, chromium E2E, UI E2E, robot protocol)
+        run: xvfb-run -a npm test
         env:
           # The mail test skips itself when no SMTP server is reachable, which is the case in CI.
           CI: 'true'
 
       - name: The same headless suites under Jest and Vitest
-        run: npm run test:runners
+        run: xvfb-run -a npm run test:runners
         env:
           CI: 'true'
 

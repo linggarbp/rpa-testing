@@ -3,8 +3,8 @@
  * tool ends up inventing):
  *
  *   - each **collector** answers one question about this machine and never modifies anything;
- *   - a **profile** selects which collectors run, so a box that only dispatches desktop work is
- *     not asked about mail or a browser;
+ *   - a **profile** selects which collectors run, so a box that only dispatches desktop work is not
+ *     asked about mail, and a box with no display is not asked which backend drives one;
  *   - the **report** is one JSON object; `--out report.zip` writes it as a one-entry archive, the
  *     way a support case would be filed.
  *
@@ -276,7 +276,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   if (options.projectDir) collectors.push(await collectProject(path.resolve(options.projectDir)));
 
   const report: DoctorReport = {
-    tool: 'rpa-testing',
+    tool: 'nutjs-testing',
     version: ownVersion(),
     generatedAt: new Date().toISOString(),
     profile,

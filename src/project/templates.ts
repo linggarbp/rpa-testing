@@ -127,7 +127,7 @@ export async function scaffoldTransactional(dir: string, name: string): Promise<
 
   files['Framework/InitAllApplications.json'] = json({
     name: 'InitAllApplications',
-    description: 'Open everything the process needs. Add web/desktop steps here; the browser stays open for the whole run.',
+    description: 'Open everything the process needs. Add the desktop steps here; whatever this process launches stays up for the whole run.',
     steps: [
       { type: 'control', action: 'log', message: 'InitAllApplications: nothing to open yet — add the apps this process drives.' }
     ]
@@ -175,7 +175,7 @@ export async function scaffoldTransactional(dir: string, name: string): Promise<
 
   files['Framework/CloseAllApplications.json'] = json({
     name: 'CloseAllApplications',
-    description: 'Graceful shutdown, always runs (the framework finally block). The run closes the browser itself at the end.',
+    description: 'Graceful shutdown, always runs (the framework finally block). Close the applications this process opened here.',
     steps: [{ type: 'control', action: 'log', message: 'CloseAllApplications: done.' }]
   });
 

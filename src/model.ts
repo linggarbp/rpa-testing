@@ -388,6 +388,10 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
         if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities) || Object.keys(capabilities).length === 0) {
           errors.push(`${name} (mobile.session) needs "capabilities" — e.g. { platformName: "Android", app: … }.`);
         }
+        const driver = step.driver;
+        if (driver !== undefined && driver !== 'raw' && driver !== 'webdriverio') {
+          errors.push(`${name} (mobile.session) has an unknown driver "${String(driver)}" — raw | webdriverio.`);
+        }
       }
       if (['tap', 'type', 'getText', 'waitFor'].includes(action)) {
         if (String(step.using ?? '').trim() === '') errors.push(`${name} (mobile.${action}) needs "using" — accessibility id | id | xpath | class name.`);

@@ -16,6 +16,13 @@ import { normalizeCapabilities } from '../src/webdriver.js';
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
 
+let webdriverioInstalled = true;
+try {
+  await import('webdriverio');
+} catch {
+  webdriverioInstalled = false;
+}
+
 interface Recorded {
   method: string;
   path: string;
@@ -47,8 +54,11 @@ async function withMockDriver<T>(run: (harness: Harness) => Promise<T>): Promise
         response.end(JSON.stringify({ value }));
       };
       const route = request.url ?? '';
+      if (request.method === 'GET' && route === '/status') return send(200, { ready: true, message: 'ok' });
       if (request.method === 'POST' && route === '/session') return send(200, { sessionId: 'sess-1', capabilities: { platformName: 'Android' } });
+      if (request.method === 'GET' && route === '/session/sess-1') return send(200, { sessionId: 'sess-1', capabilities: { platformName: 'Android' } });
       if (request.method === 'DELETE' && route.startsWith('/session/')) return send(200, null);
+      if (request.method === 'POST' && /\/session\/[^/]+\/(timeouts|url)$/.test(route)) return send(200, null);
       if (request.method === 'POST' && /\/element$/.test(route)) {
         const { value } = payload as { value: string };
         if (value === 'ghost') return send(404, { error: 'no such element', message: 'An element could not be located' });
@@ -177,6 +187,27 @@ test('steps without a session, and shapes without their fields, are refused earl
     { type: 'mobile', action: 'swipe', direction: 'sideways' }
   ])));
   assert.equal(errors.length, 3, errors.join('\n'));
+});
+
+test('the webdriverio driver speaks the same protocol (the optional-dependency path)', { skip: webdriverioInstalled ? false : 'webdriverio not installed' }, async () => {
+  await withMockDriver(async ({ base, calls }) => {
+    const result = await engineRun([
+      { type: 'mobile', action: 'session', driver: 'webdriverio', server: base, capabilities: { platformName: 'Android', deviceName: 'emulator-5554', app: '/apps/demo.apk' }, saveAs: 'sessionId' },
+      { type: 'mobile', action: 'tap', using: 'accessibility id', value: 'login' },
+      { type: 'mobile', action: 'type', using: 'accessibility id', value: 'user', text: 'ada' },
+      { type: 'mobile', action: 'getText', using: 'accessibility id', value: 'greeting', saveAs: 'greeting' },
+      { type: 'mobile', action: 'end' }
+    ]);
+
+    assert.equal(result.status, 'Passed', result.error);
+    assert.equal(result.vars['sessionId'], 'sess-1');
+    assert.equal(result.vars['greeting'], 'Ada Lovelace');
+    assert.ok(calls.some((call) => call.method === 'POST' && call.path === '/session'), 'wdio created the session over the same W3C endpoint');
+    assert.ok(calls.some((call) => call.path.endsWith('/value')), 'wdio sent the text through the element value command');
+    assert.ok(calls.some((call) => call.path.endsWith('/text')), 'wdio read the text through the element text command');
+    assert.ok(calls.some((call) => call.method === 'DELETE' && call.path === '/session/sess-1'), 'wdio closed the session');
+    assert.ok(result.logs.some((line) => line.message.includes('via webdriverio')));
+  });
 });
 
 test('a screenshot step writes the bytes the endpoint sent', async () => {

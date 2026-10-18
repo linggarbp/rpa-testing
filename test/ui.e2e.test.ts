@@ -7,6 +7,8 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { askHuman } from '../src/gaps.js';
+import { pickTarget } from '../src/pick.js';
 import { scaffoldTransactional } from '../src/templates.js';
 import { startUi } from '../src/ui/server.js';
 
@@ -140,8 +142,125 @@ test('the page loads the workflow canvas and runs it from the Run button', { ski
       const status = await page.locator('#status').innerText();
       assert.equal(status, 'passed', await page.locator('#console').innerText());
       assert.match(await page.locator('#console').innerText(), /Workflow completed\./);
+
+      // The Human tab: nothing waiting, and it says so instead of showing an empty box.
+      await page.locator('.tabs button', { hasText: 'Human' }).click();
+      await page.waitForSelector('#tab-human:not(.hidden) #hitl-list');
+      assert.match(await page.locator('#hitl-list').innerText(), /nothing waiting/);
+
+      // The queue panel: add an item from the form, then close it from the row's own control.
+      await page.locator('.tabs button', { hasText: 'Queue' }).click();
+      await page.fill('#queue-name', 'InvoiceQueue');
+      await page.fill('#queue-ref', 'INV-FROM-UI');
+      await page.locator('#queue-add').click();
+      await page.waitForSelector('#queue-table tbody tr');
+      assert.match(await page.locator('#queue-counts').innerText(), /New: 1/);
+      await page.locator('#queue-table tbody tr').first().locator('select[data-status]').selectOption('Successful');
+      await page.locator('#queue-table tbody tr').first().locator('[data-set]').click();
+      await page.waitForFunction(() => /Successful: 1/.test(document.querySelector('#queue-counts')?.textContent ?? ''));
+
+      // Pick element: with no URL in the workflow it says what it needs instead of opening nothing.
+      await page.locator('.tabs button', { hasText: 'Properties' }).click();
+      await page.locator('#pick').click();
+      await page.waitForFunction(() => /give a URL/.test(document.querySelector('#props-hint')?.textContent ?? ''));
     } finally {
       await browser.close();
     }
+  });
+});
+
+test('the Human tab lists a pending hitl.ask and answers it', async () => {
+  await withUi(async (base, projectDir) => {
+    // A workflow that is waiting on a human: askHuman writes the request and blocks on the answer.
+    const waiting = askHuman({ projectDir, prompt: 'Approve INV-UI?', choices: ['yes', 'no'], timeoutMs: 15000, pollMs: 50 });
+
+    let pending: { requests: Array<{ id: string; prompt: string; choices?: string[] }> } = { requests: [] };
+    for (let attempt = 0; attempt < 40 && pending.requests.length === 0; attempt++) {
+      pending = await (await fetch(`${base}/api/hitl`)).json() as typeof pending;
+      if (pending.requests.length === 0) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(pending.requests.length, 1, 'the panel sees the waiting question');
+    assert.equal(pending.requests[0]?.prompt, 'Approve INV-UI?');
+    assert.deepEqual(pending.requests[0]?.choices, ['yes', 'no']);
+
+    const answered = await fetch(`${base}/api/hitl/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: pending.requests[0]?.id, value: 'yes' })
+    });
+    assert.equal(answered.status, 200);
+
+    // The run that was waiting really got the answer — not just a 200 from the endpoint.
+    const result = await waiting;
+    assert.equal(result.asked, true);
+    assert.equal(result.answer, 'yes');
+
+    const after = await (await fetch(`${base}/api/hitl`)).json() as { requests: unknown[] };
+    assert.equal(after.requests.length, 0, 'answered requests are no longer pending');
+
+    const missing = await fetch(`${base}/api/hitl/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: 'x' }) });
+    assert.equal(missing.status, 400);
+  });
+});
+
+test('the queue panel sets an item status from the UI', async () => {
+  await withUi(async (base) => {
+    await fetch(`${base}/api/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'InvoiceQueue', reference: 'INV-STATUS', data: { amount: '3' } })
+    });
+    const before = await (await fetch(`${base}/api/queue?name=InvoiceQueue`)).json() as { items: Array<{ id: string; status: string }> };
+    const id = before.items[0]?.id ?? '';
+    assert.equal(before.items[0]?.status, 'New');
+
+    const set = await fetch(`${base}/api/queue/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'InvoiceQueue', id, status: 'BusinessException', reason: 'rule 7' })
+    });
+    assert.equal(set.status, 200);
+
+    const after = await (await fetch(`${base}/api/queue?name=InvoiceQueue`)).json() as { counts: Record<string, number>; items: Array<{ status: string; reason?: string; processingException?: { type: string } }> };
+    assert.equal(after.counts.BusinessException, 1);
+    assert.equal(after.items[0]?.reason, 'rule 7');
+    assert.equal(after.items[0]?.processingException?.type, 'business');
+
+    // A status the queue does not know is refused with the list of what it accepts.
+    const refused = await fetch(`${base}/api/queue/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'InvoiceQueue', id, status: 'Teleported' })
+    });
+    assert.ok(refused.status >= 400);
+    assert.match(String(((await refused.json()) as { error?: string }).error ?? ''), /expected one of/);
+  });
+});
+
+test('the pick code path turns a real click into a target, and the endpoint reports an idle picker', { skip: !available ? 'no chromium on this host' : false }, async () => {
+  await withUi(async (base) => {
+    // `rpa pick` and the Studio button share this: a real chromium, the injected script, one click.
+    const step = await pickTarget(base, {
+      headless: true,
+      timeoutMs: 15000,
+      onPage: async (page) => { await page.click('#save'); } // a scripted clicker instead of a human
+    });
+    assert.equal(step?.type, 'web');
+    assert.equal(step?.action, 'click');
+    assert.equal(step?.target.strict, '#save');
+    assert.deepEqual((step?.target.fuzzy as { tag: string; attributes: Record<string, string> }).attributes.id, 'save');
+    assert.equal((step?.target.fuzzy as { tag: string }).tag, 'BUTTON', 'fuzzy targeting comes from the same click');
+
+    // The endpoint validates its input, and a pick nobody answers times out instead of hanging.
+    const missing = await fetch(`${base}/api/pick`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    assert.equal(missing.status, 400);
+
+    const idle = await fetch(`${base}/api/pick`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: base, headless: true, timeoutMs: 1000 })
+    });
+    assert.equal(idle.status, 408);
+    assert.match(String(((await idle.json()) as { error?: string }).error ?? ''), /nothing was picked/);
   });
 });

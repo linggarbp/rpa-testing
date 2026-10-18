@@ -35,9 +35,18 @@
       <button data-tab="props" class="active">Properties</button>
       <button data-tab="console">Console</button>
       <button data-tab="queue">Queue</button>
+      <button data-tab="human">Human</button>
     </div>
 
     <div id="tab-props" class="tab-panel">
+      <div class="row">
+        <span class="hint">Pick an element to get target JSON</span>
+        <div class="spacer"></div>
+        <button id="pick" class="ghost small">Pick element</button>
+      </div>
+      <div class="row">
+        <input id="pick-url" placeholder="https://the page to open" spellcheck="false">
+      </div>
       <div class="hint" id="props-hint">Select a step to edit it, or click an activity on the left to add one.</div>
       <div id="props"></div>
     </div>
@@ -63,6 +72,17 @@
         <input id="queue-data" placeholder='{"amount":"10"}' spellcheck="false">
         <button id="queue-add" class="ghost small">add item</button>
       </div>
+      <div id="queue-message" class="hint"></div>
+    </div>
+
+    <div id="tab-human" class="tab-panel hidden">
+      <div class="row">
+        <span class="hint">Pending questions from <code>hitl.ask</code></span>
+        <div class="spacer"></div>
+        <button id="hitl-refresh" class="ghost small">refresh</button>
+      </div>
+      <div id="hitl-list"></div>
+      <div id="hitl-message" class="hint"></div>
     </div>
   </aside>
 </main>

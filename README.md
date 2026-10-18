@@ -37,10 +37,11 @@ npm run rpa -- run demo/Main.json --headed
 npm run rpa -- validate demo/Main.json
 ```
 
-`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab,
-served by one Node process. It works the same on Windows, Linux and macOS (`--no-open` on a headless
-host, `--port N` to move it). There is no bundler, no Electron and no build step — the page is three
-static files in `ui/`.
+`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab
+(add items, set a status) + a Human tab for pending `hitl.ask` questions, plus a **Pick element**
+button that runs the same code path as `rpa pick` and drops the step onto the canvas. It works the
+same on Windows, Linux and macOS (`--no-open` on a headless host, `--port N` to move it). There is no
+bundler, no Electron and no build step — the page is three static files in `ui/`.
 
 Run a workflow as a robot for an Aro orchestrator:
 
@@ -133,7 +134,8 @@ The log says which method actually matched (`target found by fuzzy selector (sco
 match(es))`), so a run that survived a changed page says so instead of pretending nothing moved.
 
 `rpa pick <url>` opens a browser, lets you click an element, and prints the target JSON to paste in
-— the "indicate element" workflow, without a designer.
+— the "indicate element" workflow, without a designer. The Studio's **Pick element** button calls the
+same code (`src/pick.ts`, `POST /api/pick { url }`) and appends the step where the canvas is pointing.
 
 ## Transactional loop template
 
@@ -236,6 +238,7 @@ src/engine.ts       step execution, resilience, variables, logging
 src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
 src/templates.ts    project templates (basic, transactional)
 src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
+src/pick.ts         the pick code path (CLI verb and Studio button)
 src/pack.ts         the package format (zip + manifest, node:zlib)
 src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA
 src/robot/aro.ts    the orchestrator protocol (robot side)

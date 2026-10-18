@@ -93,7 +93,7 @@ Ordered by what a personal tool notices first. Nothing here is blocked on Aro.
 | Gap | Why it is a gap | Where it would land |
 |---|---|---|
 | Queues in Aro | The orchestration half of the pattern: items → per-item retries → outcomes. Today `queue.*` is local and dispatcher/performer share a folder | **Aro** (control plane): entity + dispatch; the robot claims items |
-| Aro validating the new step families | Its `FlowDefinitionValidator` only allows its own actions, so a *dispatched* flow cannot use `queue.*`, `excel.*`, `try`, `invoke`, … yet | **Aro**: validator + designer catalog (small PR) |
+| Aro validating the new step families | closed: Aro's `FlowDefinitionValidator` now accepts every family this engine implements, bodies included; the designer is deliberately untouched — authoring stays here | **Aro** (validator PR) |
 | Schedules/triggers for flows | Aro schedules exist for test runs, not flows yet | **Aro** |
 | Mail steps (`mail.send`, `mail.receive`) | closed: nodemailer / imapflow, both optional | here |
 | `pdf.readText` | closed: `pdftotext` | here |
@@ -106,9 +106,26 @@ Ordered by what a personal tool notices first. Nothing here is blocked on Aro.
 | Full recorder | `rpa pick` indicates one element; a recorder captures a session | here: convert a Playwright trace into steps |
 | Packages | closed: `rpa pack` writes a zip + `manifest.json` (sha256 per file), `rpa run` verifies and runs it. No signing — the manifest proves integrity, not authorship | here |
 | Coded workflows (C#) | A code-first authoring mode | not planned — the engine is Node |
+| Legacy export import | closed: `rpa import <xaml\|project.json>` → JSON + `PORTING-REPORT.md` (unmapped activity + line). The runtime stays JSON | here |
 
 The Studio (`rpa ui`) shipped in this pass; a native shell (Electron/Tauri) would only wrap it, and
 the local web UI already runs on Windows, Linux and macOS without one.
+
+## Importing a legacy export
+
+`src/import.ts` reads a legacy desktop-automation export (XAML, or a project descriptor listing XAML
+files) and writes this tool's JSON plus a `PORTING-REPORT.md`. It is a converter at the edge, not a
+second runtime: the engine only ever executes JSON, and a converted file is an ordinary workflow —
+`rpa run`, `rpa ui` and a dispatched flow treat it like anything else.
+
+- The XML reader is ~90 lines of this repo (no dependency), namespaces are ignored (local names
+  decide), and every node keeps its source line so the report can point at it.
+- The activity mapping is a table in that file; an activity with no equivalent is reported, but its
+  body is still walked, so a scope this tool does not model never costs the steps written inside it.
+- Expressions are translated only where the meaning is unambiguous. Anything else is reported rather
+  than guessed — a silent guess is a workflow that passes for the wrong reason.
+- Selector strings go through `parseSelectorChain`, which is the same parser `rpa pick` output and a
+  hand-written chain go through.
 
 ## Testing strategy
 

@@ -1,0 +1,20 @@
+<Activity x:Class="Dispatcher"
+          xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+          xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+          xmlns:a="clr-namespace:Automation.Activities;assembly=Automation.Activities">
+  <Sequence DisplayName="Dispatcher">
+    <a:ForEachFileX DisplayName="Every invoice in the inbox" Folder="Data/Input" Filter="*.pdf">
+      <a:ForEachFileX.Body>
+        <ActivityAction>
+          <Sequence DisplayName="Hand one file to the queue">
+            <a:AddQueueItem DisplayName="Add to InvoiceQueue" QueueName="[Config(&quot;Queue&quot;).ToString]" Reference="[CurrentFile.Name]">
+              <a:AddQueueItem.ItemInformation>
+                <InArgument x:TypeArguments="x:String" x:Key="path">[CurrentFile.FullName]</InArgument>
+              </a:AddQueueItem.ItemInformation>
+            </a:AddQueueItem>
+          </Sequence>
+        </ActivityAction>
+      </a:ForEachFileX.Body>
+    </a:ForEachFileX>
+  </Sequence>
+</Activity>

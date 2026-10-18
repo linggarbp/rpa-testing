@@ -640,7 +640,12 @@ export class Engine {
     switch (normalizeAction(step.action, 'queue')) {
       case 'addItem': {
         // `specificContent` is the queue format's name for the same payload; accept either spelling.
-        const payload = (step.data ?? step.specificContent ?? {}) as Record<string, unknown>;
+        // Every string value is interpolated, the way every other step field is — a dispatcher hands
+        // over `${file}` and the item holds the real path.
+        const declared = (step.data ?? step.specificContent ?? {}) as Record<string, unknown>;
+        const payload = Object.fromEntries(Object.entries(declared).map(([key, value]) => [
+          key, typeof value === 'string' ? this.interp(value) : value
+        ]));
         const item = await this.queues.add(queue, this.interp(String(step.reference ?? '')), payload);
         if (step.saveAs) this.vars[String(step.saveAs)] = item.id;
         await this.log('info', `queue.addItem ${queue} → ${item.id} (${item.reference})`);

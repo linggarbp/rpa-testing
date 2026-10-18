@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Typecheck and tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium (web steps)
+        run: npx playwright install --with-deps chromium
+
+      - name: Tests (type-check, unit, chromium E2E, UI E2E, robot protocol)
+        run: npm test
+        env:
+          # The mail test skips itself when no SMTP server is reachable, which is the case in CI.
+          CI: 'true'
+
+  naming:
+    name: Naming policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: No third-party product names in the tree
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+
+          # Assembled from fragments on purpose: this workflow must not contain the names it bans.
+          banned = ["ui" + "path", "re" + "framework", "robotic " + "enterprise", "action " + "center"]
+          hits = []
+          for path in pathlib.Path('.').rglob('*'):
+              if not path.is_file() or '.git' in path.parts or 'node_modules' in path.parts:
+                  continue
+              try:
+                  text = path.read_text()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              lowered = text.lower()
+              for term in banned:
+                  if term in lowered:
+                      hits.append(f"{path}: {term}")
+          if hits:
+              print("\n".join(hits))
+              sys.exit(1)
+          print("clean: no third-party product names")
+          PY

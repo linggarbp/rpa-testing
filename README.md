@@ -1,5 +1,8 @@
 # rpa-testing
 
+[![CI](https://github.com/linggarbp/rpa-testing/actions/workflows/ci.yml/badge.svg)](https://github.com/linggarbp/rpa-testing/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A personal RPA toolkit: a JSON workflow format, a step engine, a Studio that runs in your browser,
 and a robot client. The **orchestrator** half is [Aro](../../aro-project): robots, flow definitions,
 dispatch, run logs and the asset vault already exist there, and this project's robot speaks Aro's
@@ -211,3 +214,8 @@ docs/               design.md
 
 Personal project. The workflow format, engine, templates and docs here are original work; no code,
 documentation or assets from any commercial RPA product are included.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+

@@ -10,10 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { Engine } from '../src/engine.js';
-import { parseWorkflow, validateWorkflow } from '../src/model.js';
-import { readArchive, writeArchive } from '../src/pack.js';
-import { buildDocx, documentText, readDocx } from '../src/word.js';
+import { Engine } from '../src/engine/engine.js';
+import { parseWorkflow, validateWorkflow } from '../src/workflow/model.js';
+import { readArchive, writeArchive } from '../src/project/pack.js';
+import { buildDocx, documentText, readDocx } from '../src/engine/word.js';
 
 const run = promisify(execFile);
 

@@ -11,9 +11,9 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Engine } from '../src/engine.js';
-import { parseWorkflow } from '../src/model.js';
-import { selectorHints } from '../src/targeting.js';
+import { Engine } from '../src/engine/engine.js';
+import { parseWorkflow } from '../src/workflow/model.js';
+import { selectorHints } from '../src/engine/targeting.js';
 
 const PAGE = `<!doctype html><html><body>
   <h1 id="heading">Orders</h1>

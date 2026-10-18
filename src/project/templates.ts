@@ -6,7 +6,7 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Step } from './model.js';
+import type { Step } from '../workflow/model.js';
 
 const json = (value: unknown) => JSON.stringify(value, null, 2) + '\n';
 

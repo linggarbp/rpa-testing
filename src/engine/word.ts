@@ -1,10 +1,10 @@
 /**
  * Word documents, the stdlib way: a .docx is a zip whose text lives in `word/document.xml`. The zip
- * reader/writer already exist for packages (src/pack.ts) — this module only adds the XML half:
+ * reader/writer already exist for packages (src/project/pack.ts) — this module only adds the XML half:
  * paragraphs out (runs, tabs, breaks, entities decoded) and a minimal valid docx in.
  */
 import { readFile } from 'node:fs/promises';
-import { readArchive, writeArchive } from './pack.js';
+import { readArchive, writeArchive } from '../project/pack.js';
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 

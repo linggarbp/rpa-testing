@@ -10,9 +10,9 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Engine } from '../src/engine.js';
-import { parseWorkflow, validateWorkflow } from '../src/model.js';
-import { normalizeCapabilities } from '../src/webdriver.js';
+import { Engine } from '../src/engine/engine.js';
+import { parseWorkflow, validateWorkflow } from '../src/workflow/model.js';
+import { normalizeCapabilities } from '../src/services/webdriver.js';
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
 

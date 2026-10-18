@@ -1,6 +1,6 @@
 /**
  * Packages — `rpa pack` writes a zip with a manifest, `rpa run` accepts it, and a file that changed
- * after packing is refused by name. The archive is read and written by src/pack.ts itself (node:zlib,
+ * after packing is refused by name. The archive is read and written by src/project/pack.ts itself (node:zlib,
  * no dependency), so this suite also pins that format.
  */
 import assert from 'node:assert/strict';
@@ -10,9 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { Engine } from '../src/engine.js';
-import { parseWorkflow } from '../src/model.js';
-import { MANIFEST_FILE, packProject, readArchive, unpack, writeArchive } from '../src/pack.js';
+import { Engine } from '../src/engine/engine.js';
+import { parseWorkflow } from '../src/workflow/model.js';
+import { MANIFEST_FILE, packProject, readArchive, unpack, writeArchive } from '../src/project/pack.js';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 

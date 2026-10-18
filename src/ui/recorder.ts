@@ -12,7 +12,7 @@
  * recorder is a different program), per-step screenshots.
  */
 import type { Page } from 'playwright';
-import type { Step, TargetSpec } from './model.js';
+import type { Step, TargetSpec } from '../workflow/model.js';
 
 export interface RecordedElement {
   tag: string;

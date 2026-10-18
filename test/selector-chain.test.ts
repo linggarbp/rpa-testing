@@ -8,11 +8,11 @@ import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Engine } from '../src/engine.js';
-import { parseWorkflow, validateWorkflow } from '../src/model.js';
-import { QueueStore } from '../src/store.js';
-import { targetFromStep } from '../src/targeting.js';
-import { parseSelectorChain, parseSelectorNodes } from '../src/selector-chain.js';
+import { Engine } from '../src/engine/engine.js';
+import { parseWorkflow, validateWorkflow } from '../src/workflow/model.js';
+import { QueueStore } from '../src/engine/store.js';
+import { targetFromStep } from '../src/engine/targeting.js';
+import { parseSelectorChain, parseSelectorNodes } from '../src/workflow/selector-chain.js';
 
 const wf = (steps: unknown[], extra: Record<string, unknown> = {}) =>
   parseWorkflow(JSON.stringify({ steps, ...extra }));

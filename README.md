@@ -191,7 +191,7 @@ under `heals`, applied or merely suggested.
 
 `rpa pick <url>` opens a browser, lets you click an element, and prints the target JSON to paste in
 — the "indicate element" workflow, without a designer. The Studio's **Pick element** button calls the
-same code (`src/pick.ts`, `POST /api/pick { url }`) and appends the step where the canvas is pointing.
+same code (`src/ui/pick.ts`, `POST /api/pick { url }`) and appends the step where the canvas is pointing.
 
 ## Transactional loop template
 
@@ -304,8 +304,20 @@ report with its source line:
 ## Tests
 
 ```bash
-npm test        # type-check + unit + real-chromium E2E + UI E2E + a fake-Aro protocol suite
+npm test             # type-check + unit + real-chromium E2E + UI E2E + a fake-Aro protocol suite
+npm run test:jest    # every non-e2e suite under Jest
+npm run test:vitest  # … and the same set under Vitest
+npm run test:runners # both, in that order
+npm run test:all     # everything: npm test + the two runners
 ```
+
+The suites are written once, against `node:test`, and run under three runners: Vitest aliases the
+`node:test` specifier to a shim (`test/support/vitest-node-test.ts`), Jest maps it to the same surface
+(`test/support/jest-node-test.cjs`), and `node:test`'s `{ skip: reason }` becomes the runner's own skip
+so a suite still says why it stepped aside. Scope is every suite except the two `.e2e` files — those
+drive a real browser and stay on `npm test`. Jest runs in ESM mode with Babel stripping types, so
+neither runner pins a transformer to the TypeScript version; the type-check is its own step
+(`npm run test:types`).
 
 The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilience),
 `test/web.e2e.test.ts` (a real page: strict/fuzzy/fallback/anchor/retry/screenshot),
@@ -331,6 +343,9 @@ including a dispatched `queue.addItem` flow that is asserted on the queue file i
 
 ### Verified
 
+- `npm run test:runners` — the 14 non-e2e suites, unchanged, under **Jest** (14 suites, 106/106) and
+  **Vitest** (14 files, 106/106), against 106/106 for the same 14 under `node:test`: one source of
+  tests, three runners. The two browser suites stay on the run `npm test` does, which is 120/120.
 - `npm test` — 120/120, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
   protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
   the queue against its own file store, a package against a tampered archive, a legacy export against
@@ -370,23 +385,34 @@ including a dispatched `queue.addItem` flow that is asserted on the queue file i
 ## Layout
 
 ```
-src/model.ts        workflow + step model, validation, action aliases
-src/targeting.ts    strict / fuzzy / anchor / idx resolution
-src/engine.ts       step execution, resilience, variables, logging
-src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
-src/templates.ts    project templates (basic, transactional)
-src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
-src/import.ts       the legacy-export importer (XAML → JSON + PORTING-REPORT.md)
-src/pick.ts         the pick code path (CLI verb and Studio button)
-src/pack.ts         the package format (zip + manifest, node:zlib)
-src/doctor.ts       environment diagnostics: collectors, profiles, report / zip
-src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA
-src/robot/aro.ts    the orchestrator protocol (robot side)
-src/cli.ts          run / validate / activities / ui / pick / doctor / init / queue / robot
-src/ui/server.ts    the Studio server (API + SSE run stream + static SPA)
-ui/                 the Studio page (index.html, app.js, style.css) — no build step
-examples/           a web workflow and a desktop+OCR workflow
-docs/               design.md, companion-tools.md, automation-lanes.md
+src/cli.ts             run / validate / activities / ui / pick / doctor / record / init / queue / robot
+src/workflow/          the format: what a workflow is, and how a target is named
+  model.ts             workflow + step model, validation, action aliases
+  selector-chain.ts    selector-chain parsing (`<html/><webctrl/>` form)
+src/engine/            executing one: the runtime, and what its steps read and write
+  engine.ts            step execution, resilience, variables, logging
+  targeting.ts         strict / fuzzy / anchor / idx resolution
+  store.ts             local queue, settings (JSON/CSV/XLSX), files, tables
+  word.ts              .docx read/write (the zip codec comes from project/pack.ts)
+src/project/           the files a project is made of
+  templates.ts         project templates (basic, transactional)
+  pack.ts              the package format (zip + manifest, node:zlib)
+  import.ts            the legacy-export importer (XAML → JSON + PORTING-REPORT.md)
+src/services/          the parts that reach outside the process
+  gaps.ts              mail, PDF, Google Sheets, HITL, Windows UIA
+  webdriver.ts         raw W3C WebDriver client (mobile.*, Appium/Selenium/chromedriver)
+  doctor.ts            environment diagnostics: collectors, profiles, report / zip
+src/ui/                the Studio
+  server.ts            API + SSE run stream + the static page
+  pick.ts              the pick code path (CLI verb and Studio button)
+  recorder.ts          the recorder (DOM events → a draft workflow)
+src/robot/aro.ts       the orchestrator protocol (robot side)
+ui/                    the Studio page (index.html, app.js, style.css) — no build step
+test/support/          the shims that let one suite run under node:test, Jest or Vitest
+jest.config.mjs        Jest: ESM + Babel type-strip, the non-e2e suite set
+vitest.config.ts       Vitest: the same set, `node:test` aliased to the shim
+examples/              a web workflow and a desktop+OCR workflow
+docs/                  design.md, companion-tools.md, automation-lanes.md
 ```
 
 Personal project. The workflow format, engine, templates and docs here are original work; no code,

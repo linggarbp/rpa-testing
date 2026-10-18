@@ -11,8 +11,8 @@
  * the log still says which method actually matched, so nobody has to guess later.
  */
 import type { Locator, Page } from 'playwright';
-import type { AnchorSpec, FuzzySpec, Step, TargetSpec } from './model.js';
-import { parseSelectorChain } from './selector-chain.js';
+import type { AnchorSpec, FuzzySpec, Step, TargetSpec } from '../workflow/model.js';
+import { parseSelectorChain } from '../workflow/selector-chain.js';
 
 export interface Box {
   x: number;

@@ -9,8 +9,8 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Engine } from '../src/engine.js';
-import { parseWorkflow, validateWorkflow } from '../src/model.js';
+import { Engine } from '../src/engine/engine.js';
+import { parseWorkflow, validateWorkflow } from '../src/workflow/model.js';
 
 interface Harness {
   base: string;

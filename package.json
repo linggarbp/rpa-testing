@@ -15,15 +15,26 @@
     "rpa": "tsx src/cli.ts",
     "ui": "tsx src/ui/server.ts",
     "build": "tsc",
-    "test": "tsc --noEmit -p tsconfig.test.json && node --import tsx --test test/*.test.ts"
+    "test": "npm run test:types && npm run test:node",
+    "test:types": "tsc --noEmit -p tsconfig.test.json",
+    "test:node": "node --import tsx --test test/*.test.ts",
+    "test:jest": "node --experimental-vm-modules --disable-warning=ExperimentalWarning node_modules/jest/bin/jest.js",
+    "test:vitest": "vitest run",
+    "test:runners": "npm run test:jest && npm run test:vitest",
+    "test:all": "npm test && npm run test:runners"
   },
   "dependencies": {
     "playwright": "^1.64.1"
   },
   "devDependencies": {
+    "@babel/core": "^8.0.7",
+    "@babel/preset-typescript": "^8.0.7",
     "@types/node": "^24.19.2",
+    "babel-jest": "^30.5.2",
+    "jest": "^30.5.2",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   },
   "optionalDependencies": {
     "imapflow": "^2.5.2",

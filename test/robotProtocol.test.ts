@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ENGINE_CAPABILITIES, AroRobot } from '../src/robot/aro.js';
-import { QueueStore } from '../src/store.js';
+import { QueueStore } from '../src/engine/store.js';
 
 interface Call {
   method: string;

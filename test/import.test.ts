@@ -10,10 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { Engine } from '../src/engine.js';
-import { convertXaml, importExport } from '../src/import.js';
-import { parseWorkflow, validateWorkflow } from '../src/model.js';
-import { QueueStore } from '../src/store.js';
+import { Engine } from '../src/engine/engine.js';
+import { convertXaml, importExport } from '../src/project/import.js';
+import { parseWorkflow, validateWorkflow } from '../src/workflow/model.js';
+import { QueueStore } from '../src/engine/store.js';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtures = path.join(repo, 'test', 'fixtures');

@@ -14,8 +14,8 @@
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parseSelectorChain } from './selector-chain.js';
-import type { Step, Workflow } from './model.js';
+import { parseSelectorChain } from '../workflow/selector-chain.js';
+import type { Step, Workflow } from '../workflow/model.js';
 
 // ── XML ─────────────────────────────────────────────────────────────────────────────────────────
 

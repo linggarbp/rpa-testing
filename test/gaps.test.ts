@@ -11,9 +11,9 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Engine } from '../src/engine.js';
-import { askHuman, answerHuman, buildUiaScript, pendingHuman, runUia } from '../src/gaps.js';
-import { parseWorkflow, validateWorkflow } from '../src/model.js';
+import { Engine } from '../src/engine/engine.js';
+import { askHuman, answerHuman, buildUiaScript, pendingHuman, runUia } from '../src/services/gaps.js';
+import { parseWorkflow, validateWorkflow } from '../src/workflow/model.js';
 
 const wf = (steps: unknown[], extra: Record<string, unknown> = {}) =>
   parseWorkflow(JSON.stringify({ steps, ...extra }));

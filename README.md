@@ -255,9 +255,11 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 
 ### Verified
 
-- `npm test` — 67/67: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
+- `npm test` — 80/80: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
   suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice, the queue
-  against its own file store.
+  against its own file store, a package against a tampered archive, and a legacy export against a
+  synthetic dispatcher/performer pair that is imported and then run (2 Successful + 1
+  BusinessException, asserted on the queue file).
 - Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
   (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
   a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s

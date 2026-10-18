@@ -93,7 +93,7 @@ Ordered by what a personal tool notices first. Nothing here is blocked on Aro.
 | Gap | Why it is a gap | Where it would land |
 |---|---|---|
 | Queues in Aro | The orchestration half of the pattern: items → per-item retries → outcomes. Today `queue.*` is local and dispatcher/performer share a folder | **Aro** (control plane): entity + dispatch; the robot claims items |
-| Aro validating the new step families | Its `FlowDefinitionValidator` only allows its own actions, so a *dispatched* flow cannot use `queue.*`, `excel.*`, `try`, `invoke`, … yet | **Aro**: validator + designer catalog (small PR) |
+| Aro validating the new step families | closed: Aro's `FlowDefinitionValidator` now accepts every family this engine implements, bodies included; the designer is deliberately untouched — authoring stays here | **Aro** (validator PR) |
 | Schedules/triggers for flows | Aro schedules exist for test runs, not flows yet | **Aro** |
 | Mail steps (`mail.send`, `mail.receive`) | closed: nodemailer / imapflow, both optional | here |
 | `pdf.readText` | closed: `pdftotext` | here |

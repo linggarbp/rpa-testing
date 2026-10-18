@@ -132,6 +132,35 @@ prints `[info] {process=Invoice, transaction=tx-1} processing tx-1`.
 The log says which method actually matched (`target found by fuzzy selector (score 0.91, 3
 match(es))`), so a run that survived a changed page says so instead of pretending nothing moved.
 
+### Healing — what a failed target may recover to
+
+When every declared method failed, one more **local** pass runs before the step gives up: it
+re-scores the page with the hard gates relaxed (`relaxed-fuzzy`) and re-searches by the selector's
+own hints — id, name, class, `[attr=v]`, text (`resemblance`). Three modes, set on a target, on a
+step, or for the whole run (`rpa run --heal …`):
+
+| mode | what a failed target does |
+|---|---|
+| `recommend` *(default)* | fails as before, but the log and the error carry the candidate it found |
+| `auto` | continues on the healed element; the log and the run's `heals` say what changed |
+| `off` | the plain failure |
+
+```jsonc
+{ "type": "web", "action": "click",
+  "target": { "strict": "#save-v2", "heal": "auto", "healThreshold": 0.75 } }
+```
+
+```
+[warn] target healed after every method failed — resemblance: id 'save-v2' ≈ 'save-v3' (score 0.86) → {"strict":"#save-v3"}
+```
+
+Healing is evidence-only (the same similarity function fuzzy matching uses — no service, no ML) and
+it knows when not to run: it is skipped while retries remain, and it never applies to checks
+(`waitForElement`, `elementExists`, `verify`) — a healed check would lie. `--heal` on a run is a cap:
+a step may ask for less than it allows, never more — so `--heal off` is the plain-failure switch,
+and `--heal recommend` previews what `auto` would have done. Every heal lands in the `--report` file
+under `heals`, applied or merely suggested.
+
 `rpa pick <url>` opens a browser, lets you click an element, and prints the target JSON to paste in
 — the "indicate element" workflow, without a designer.
 
@@ -155,13 +184,15 @@ npm --prefix .. run rpa -- queue InvoiceQueue        # Successful / BusinessExce
 ## Commands
 
 ```
-rpa run <workflow.json|package.rpapkg>  run it here (--headed, --var k=v, --report out.json, --json)
+rpa run <workflow.json|package.rpapkg>  run it here (--headed, --var k=v, --report out.json, --json, --heal off|recommend|auto)
 rpa validate <workflow.json…>  syntax + shape, no execution
 rpa import <export.xaml|project.json> --out <dir>   convert a legacy export; writes PORTING-REPORT.md
 rpa pack <project> --out <file.rpapkg>  zip a project with a manifest (--entry, --name, --version)
 rpa activities                 the catalog above
 rpa ui                         Studio in the browser (--project <dir>, --port N, --no-open)
 rpa pick <url>                 click an element, get its target JSON (--out target.json)
+rpa doctor                     check this machine: collectors + profiles (--profile default|robot|web,
+                               --project <dir>, --out report.zip|report.json, --json)
 rpa init <dir>                 scaffold (--template basic|transactional)
 rpa queue <name> | add <name> <ref> [json]   the local transaction queue
 rpa hitl [answer <id> <value>]  human-in-the-loop questions (hitl.ask waits on these)
@@ -191,6 +222,8 @@ built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 | Authoring | `rpa ui` — canvas, palette, properties, live console, queue tab; `rpa pick` for targeting |
 | Activities | `web.*` / `desktop.*` / `excel.*` / `file.*` / `queue.*` / `control.*` / `mail.*` / `pdf.*` / `gsheet.*` / `hitl.*` |
 | Targeting | strict → fuzzy (scored attributes) → anchor (geometry) → idx, with the matching method logged |
+| Recovery | `heal: off/recommend/auto` on a target or step (`--heal` for the run): a failed target re-scores the page locally and reports — or applies — the fix |
+| Diagnostics | `rpa doctor` — collectors (runtime, modules, browser, session, tools, project), profiles, report/zip |
 | Input | Playwright drives the real browser; desktop steps are hardware-level via nut.js — one engine, not four modes |
 | Step options | `timeoutMs`, `delayBeforeMs`, `delayAfterMs`, `continueOnError`, `retry` |
 | Recording | `rpa pick` indicates one element; workflows are authored as JSON |
@@ -212,15 +245,23 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/transaction-loop.test.ts` (the scaffolded template: business vs application exception paths),
 `test/selector-chain.test.ts` (selector-chain parsing, entry-point arguments, verify),
 `test/pack.test.ts` (pack → run from the archive; a tampered file refused),
+`test/heal.test.ts` (a changed id healed by resemblance, the recommend default, the `--heal` cap,
+retry/final-attempt rule, checks that must not heal),
+`test/doctor.test.ts` (collector shape, profiles, project validation, the report zip),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
 
 ### Verified
 
-- `npm test` — 67/67: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
-  suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice, the queue
-  against its own file store.
+- `npm test` — 92/92, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
+  protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
+  the queue against its own file store, healing against a page whose element id actually changed.
+- CLI walk-through (2026-10-18): a workflow targeting the stale `#save-v2` ran `--heal auto` —
+  `[warn] target healed … resemblance: id 'save-v2' ≈ 'save-v3' (score 0.86)` — and **Passed** in
+  952 ms with 1 heal recorded in `--report`; `--heal off` on the same file failed plainly.
+  `rpa doctor --profile robot --project … --out report.zip` reported 6 collectors / 0 warnings /
+  0 problems and wrote a zip holding `report.json`.
 - Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
   (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
   a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s
@@ -237,13 +278,14 @@ src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
 src/templates.ts    project templates (basic, transactional)
 src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
 src/pack.ts         the package format (zip + manifest, node:zlib)
+src/doctor.ts       environment diagnostics: collectors, profiles, report / zip
 src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA
 src/robot/aro.ts    the orchestrator protocol (robot side)
-src/cli.ts          run / validate / activities / ui / pick / init / queue / robot
+src/cli.ts          run / validate / activities / ui / pick / doctor / init / queue / robot
 src/ui/server.ts    the Studio server (API + SSE run stream + static SPA)
 ui/                 the Studio page (index.html, app.js, style.css) — no build step
 examples/           a web workflow and a desktop+OCR workflow
-docs/               design.md
+docs/               design.md, companion-tools.md
 ```
 
 Personal project. The workflow format, engine, templates and docs here are original work; no code,

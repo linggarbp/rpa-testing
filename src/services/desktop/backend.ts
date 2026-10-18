@@ -101,8 +101,12 @@ export interface ProbeResult {
  * Load a module and ask it one question in a child process. `expression` is JavaScript evaluated
  * with the module as `m`, e.g. `m.screen.width()`; its value is the proof that the backend drives
  * this display. A crash, a signal, a timeout or a non-zero exit all read as unavailable.
+ *
+ * The timeout is deliberately short (8 s): a native addon that hangs waiting on a display is not a
+ * backend this run can use, and the probe is paid once per process — a test file that pays 20 s for
+ * a hang is a test file that fails on a timeout instead of on a fact.
  */
-export function probeInChild(moduleName: string, expression: string, timeoutMs = 20000): Promise<ProbeResult> {
+export function probeInChild(moduleName: string, expression: string, timeoutMs = 8000): Promise<ProbeResult> {
   const script = [
     `const spec = ${JSON.stringify(moduleName)};`,
     'try {',

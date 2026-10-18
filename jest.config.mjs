@@ -20,5 +20,5 @@ export default {
     // TypeScript-style relative imports (`./model.js`) name the file they compile to: drop the extension.
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
-  testTimeout: 30_000,
+  testTimeout: 60_000, // the transactional-loop suite drives real retries (and a capture per retry)
 };

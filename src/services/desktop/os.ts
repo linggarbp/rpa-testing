@@ -316,12 +316,12 @@ const PROFILES: Partial<Record<NodeJS.Platform, () => OsProfile>> = {
 };
 
 /** Wait for a capture to land on disk: some tools fork and return before the file is written. */
-async function waitForFile(target: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+async function waitForFile(target: string, graceMs = 800): Promise<boolean> {
+  const deadline = Date.now() + graceMs;
   for (;;) {
     if (await stat(target).then(() => true, () => false)) return true;
     if (Date.now() >= deadline) return false;
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
 }
 
@@ -340,7 +340,7 @@ async function proveCapture(profile: OsProfile, timeoutMs: number): Promise<{ to
     for (const command of commands) {
       try {
         await run(command, timeoutMs);
-        if (await waitForFile(target, 3000)) return { tool: command.file };
+        if (await waitForFile(target)) return { tool: command.file };
         reason = `${command.file} exited without writing a file`;
       } catch (error) {
         reason = (error as Error).message.split('\n')[0] ?? '';
@@ -392,8 +392,10 @@ export async function createOsBackend(timeoutMs = 20000): Promise<DesktopBackend
   // capability, and the reason rides along in the backend's detail line.
   const capabilities = new Set(profile.capabilities);
   let detail = profile.detail;
+  let provenCapture: string | undefined;
   if (capabilities.has('capture')) {
     const proof = await proveCapture(profile, timeoutMs);
+    provenCapture = proof.tool;
     if (proof.tool) detail = `${detail} — capture via ${proof.tool}`;
     else {
       capabilities.delete('capture');
@@ -432,11 +434,18 @@ export async function createOsBackend(timeoutMs = 20000): Promise<DesktopBackend
       : {}),
     async capture(target) {
       if (!capabilities.has('capture')) throw new Error(`the OS backend cannot capture on ${process.platform} — ${detail}`);
+      // The tool the probe proved goes first: on a host where the first candidate is installed but
+      // useless (ImageMagick's `import`), trying it again per capture would burn a grace period each
+      // time — enough to turn a retrying workflow into a slow one.
+      const candidates = profile.captures(target);
+      const ordered = provenCapture
+        ? [...candidates.filter((command) => command.file === provenCapture), ...candidates.filter((command) => command.file !== provenCapture)]
+        : candidates;
       let lastError: Error | undefined;
-      for (const command of profile.captures(target)) {
+      for (const command of ordered) {
         try {
           await run(command, timeoutMs);
-          if (await waitForFile(target, 3000)) return target;
+          if (await waitForFile(target)) return target;
           lastError = new Error(`${command.file} exited without writing ${target}`);
         } catch (error) {
           lastError = error as Error;

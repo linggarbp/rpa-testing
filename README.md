@@ -155,8 +155,10 @@ npm --prefix .. run rpa -- queue InvoiceQueue        # Successful / BusinessExce
 ## Commands
 
 ```
-rpa run <workflow.json>      run it here (--headed, --var k=v, --report out.json, --json)
+rpa run <workflow.json|package.rpapkg>  run it here (--headed, --var k=v, --report out.json, --json)
 rpa validate <workflow.json…>  syntax + shape, no execution
+rpa import <export.xaml|project.json> --out <dir>   convert a legacy export; writes PORTING-REPORT.md
+rpa pack <project> --out <file.rpapkg>  zip a project with a manifest (--entry, --name, --version)
 rpa activities                 the catalog above
 rpa ui                         Studio in the browser (--project <dir>, --port N, --no-open)
 rpa pick <url>                 click an element, get its target JSON (--out target.json)
@@ -165,6 +167,22 @@ rpa queue <name> | add <name> <ref> [json]   the local transaction queue
 rpa hitl [answer <id> <value>]  human-in-the-loop questions (hitl.ask waits on these)
 rpa robot …                    connect to Aro and take dispatched flows
 ```
+
+## Packages
+
+`rpa pack <project> --out bot.rpapkg` writes a zip (no dependency — node:zlib) holding the project's
+files plus a `manifest.json` with the name, version, entry and a sha256 per file. `rpa run bot.rpapkg`
+extracts it to a temporary folder, checks every hash against the manifest, runs the entry there and
+cleans up: `invoke`, `config.load`, `file.*`, `excel.*`, `queue.*` resolve inside the package.
+
+```
+rpa pack bot --out bot-1.0.rpapkg --version 1.0.0
+rpa run bot-1.0.rpapkg --var Out=/tmp/report.txt
+```
+
+A file that changed after packing is refused by name (`Main.json does not match the manifest`) — that
+is what the hashes are for. There is no signing: the manifest proves a package is intact, not who
+built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 
 ## Design notes
 
@@ -180,7 +198,7 @@ rpa robot …                    connect to Aro and take dispatched flows
 | Orchestrator | **Aro**: robots, flows, dispatch, logs, assets — this repo is the robot |
 | Queues | local `queue.*` with dispatcher/performer semantics; an Aro queue service is the next orchestrator feature |
 | Credentials | `${secret.NAME}` resolved once before step 1 (Aro's asset vault on a robot) |
-| Still open | packages, a full recorder, ML document understanding (use OCR + regex) |
+| Still open | a full recorder, ML document understanding (use OCR + regex) |
 
 ## Tests
 
@@ -193,6 +211,7 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/steps.test.ts` (queue lifecycle, files, tables, settings, try/catch, retryScope, invoke),
 `test/transaction-loop.test.ts` (the scaffolded template: business vs application exception paths),
 `test/selector-chain.test.ts` (selector-chain parsing, entry-point arguments, verify),
+`test/pack.test.ts` (pack → run from the archive; a tampered file refused),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
@@ -217,6 +236,7 @@ src/engine.ts       step execution, resilience, variables, logging
 src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
 src/templates.ts    project templates (basic, transactional)
 src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
+src/pack.ts         the package format (zip + manifest, node:zlib)
 src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA
 src/robot/aro.ts    the orchestrator protocol (robot side)
 src/cli.ts          run / validate / activities / ui / pick / init / queue / robot

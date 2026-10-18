@@ -104,7 +104,7 @@ Ordered by what a personal tool notices first. Nothing here is blocked on Aro.
 | Structured log fields | closed: `control.log.fields` on the `LogLine`, printed `{k=v}` and shipped to Aro | here |
 | Document Understanding | open: needs trained models; OCR + regex is the substitute | out of scope |
 | Full recorder | `rpa pick` indicates one element; a recorder captures a session | here: convert a Playwright trace into steps |
-| Packages (versioned, signed) | Workflows are plain JSON; a package format pays off for sharing | here, if workflows ever leave this machine |
+| Packages | closed: `rpa pack` writes a zip + `manifest.json` (sha256 per file), `rpa run` verifies and runs it. No signing — the manifest proves integrity, not authorship | here |
 | Coded workflows (C#) | A code-first authoring mode | not planned — the engine is Node |
 
 The Studio (`rpa ui`) shipped in this pass; a native shell (Electron/Tauri) would only wrap it, and

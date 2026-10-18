@@ -13,6 +13,7 @@ import path from 'node:path';
 import { Engine, formatLogLine } from './engine.js';
 import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS } from './model.js';
 import { AroRobot } from './robot/aro.js';
+import { packProject, unpack } from './pack.js';
 import { QueueStore } from './store.js';
 import { scaffoldBasic, scaffoldTransactional } from './templates.js';
 import { answerHuman, pendingHuman } from './gaps.js';
@@ -63,14 +64,18 @@ function values(flags: Flags, key: string): string[] {
 
 const HELP = `rpa-testing — a small, honest RPA toolkit
 
-  rpa run <workflow.json>      run a workflow (--headed, --var name=value, --report out.json)
+  rpa run <workflow.json|package.rpapkg>  run a workflow (--headed, --var name=value, --report out.json)
   rpa validate <workflow.json…>  validate without running
+  rpa import <file.xaml|project.json> --out <dir>   convert a legacy export (writes PORTING-REPORT.md)
+  rpa pack <dir> --out <file.rpapkg>  zip a project with a manifest (--entry, --name, --version)
   rpa activities               list the activity catalog
   rpa init <dir>               scaffold a project (--template basic|transactional)
   rpa queue <name>             show a local queue (--project <dir>, --status <status>, --json)
   rpa queue add <name> <ref> [json]   add a transaction item
   rpa hitl                     list pending human-in-the-loop questions
   rpa hitl answer <id> <value>  answer one (what hitl.ask waits for)
+  rpa pick <url>               click an element, get its target JSON (--out target.json)
+  rpa ui                       the Studio in a browser (--project <dir>, --port N, --no-open)
   rpa robot --api <url> --project <id> [--api-key <key> | --robot-id <id> --robot-key <key>]
             [--name <host>] [--capabilities web,desktop,ocr] [--mode Attended|Unattended] [--once]
 `;
@@ -131,44 +136,73 @@ async function main(): Promise<number> {
         console.error('rpa run needs a workflow file.');
         return 2;
       }
-      const workflow = parseWorkflow(await readFile(file, 'utf8'));
-      const errors = validateWorkflow(workflow);
-      if (errors.length > 0) {
-        console.error(errors.join('\n'));
+      // A package is a zip with a manifest: extract it, verify every hash, run its entry, clean up.
+      let source = path.resolve(file);
+      let cleanup: (() => Promise<void>) | undefined;
+      if (path.extname(file).toLowerCase() === '.rpapkg') {
+        const opened = await unpack(file);
+        source = opened.entry;
+        cleanup = opened.cleanup;
+        console.log(`package  : ${opened.manifest.name} ${opened.manifest.version} — entry ${opened.manifest.entry}, ${Object.keys(opened.manifest.files).length} file(s), manifest verified`);
+      }
+      try {
+        const workflow = parseWorkflow(await readFile(source, 'utf8'));
+        const errors = validateWorkflow(workflow);
+        if (errors.length > 0) {
+          console.error(errors.join('\n'));
+          return 2;
+        }
+        const overrides: Record<string, unknown> = {};
+        for (const pair of values(flags, 'var')) {
+          const index = pair.indexOf('=');
+          if (index > 0) overrides[pair.slice(0, index)] = pair.slice(index + 1);
+        }
+        // --arg is the entry-point spelling (`in_*` arguments); it lands in the same variables.
+        for (const pair of values(flags, 'arg')) {
+          const index = pair.indexOf('=');
+          if (index > 0) overrides[pair.slice(0, index)] = pair.slice(index + 1);
+        }
+
+        const engine = new Engine({
+          headless: flags.headed !== true,
+          variables: overrides,
+          // Paths inside the workflow are project-relative: invoke, config.load, files, the queue.
+          baseDir: path.dirname(source),
+          onLog: (line) => {
+            if (flags.json !== true) console.log(formatLogLine(line));
+          }
+        });
+        const result = await engine.run(workflow, {});
+        if (flags.json === true || values(flags, 'report').length > 0) {
+          const report = values(flags, 'report')[0];
+          if (report) {
+            await mkdir(path.dirname(path.resolve(report)), { recursive: true });
+            await writeFile(report, JSON.stringify(result, null, 2));
+            console.log(`report written to ${report}`);
+          }
+          if (flags.json === true) console.log(JSON.stringify({ status: result.status, error: result.error, durationMs: result.durationMs, vars: result.vars }, null, 2));
+        }
+        console.log(`${result.status}${result.error ? ` — ${result.error}` : ''} (${result.stepsRun} step(s), ${result.durationMs} ms)`);
+        return result.status === 'Passed' ? 0 : 1;
+      } finally {
+        if (cleanup) await cleanup();
+      }
+    }
+
+    case 'pack': {
+      const dir = positional[0];
+      const out = values(flags, 'out')[0];
+      if (!dir || !out) {
+        console.error('rpa pack <project dir> --out <file.rpapkg> [--entry Main.json] [--name X] [--version 0.1.0]');
         return 2;
       }
-      const overrides: Record<string, unknown> = {};
-      for (const pair of values(flags, 'var')) {
-        const index = pair.indexOf('=');
-        if (index > 0) overrides[pair.slice(0, index)] = pair.slice(index + 1);
-      }
-      // --arg is the entry-point spelling (`in_*` arguments); it lands in the same variables.
-      for (const pair of values(flags, 'arg')) {
-        const index = pair.indexOf('=');
-        if (index > 0) overrides[pair.slice(0, index)] = pair.slice(index + 1);
-      }
-
-      const engine = new Engine({
-        headless: flags.headed !== true,
-        variables: overrides,
-        // Paths inside the workflow are project-relative: invoke, config.load, files, the queue.
-        baseDir: path.dirname(path.resolve(file)),
-        onLog: (line) => {
-          if (flags.json !== true) console.log(formatLogLine(line));
-        }
+      const result = await packProject(dir, out, {
+        ...(values(flags, 'entry')[0] ? { entry: values(flags, 'entry')[0]! } : {}),
+        ...(values(flags, 'name')[0] ? { name: values(flags, 'name')[0]! } : {}),
+        ...(values(flags, 'version')[0] ? { version: values(flags, 'version')[0]! } : {})
       });
-      const result = await engine.run(workflow, {});
-      if (flags.json === true || values(flags, 'report').length > 0) {
-        const report = values(flags, 'report')[0];
-        if (report) {
-          await mkdir(path.dirname(path.resolve(report)), { recursive: true });
-          await writeFile(report, JSON.stringify(result, null, 2));
-          console.log(`report written to ${report}`);
-        }
-        if (flags.json === true) console.log(JSON.stringify({ status: result.status, error: result.error, durationMs: result.durationMs, vars: result.vars }, null, 2));
-      }
-      console.log(`${result.status}${result.error ? ` — ${result.error}` : ''} (${result.stepsRun} step(s), ${result.durationMs} ms)`);
-      return result.status === 'Passed' ? 0 : 1;
+      console.log(`packed ${result.files} file(s) → ${result.file} (entry ${result.entry}, ${result.bytes} bytes)`);
+      return 0;
     }
 
     case 'validate': {

@@ -343,6 +343,9 @@ including a dispatched `queue.addItem` flow that is asserted on the queue file i
 
 ### Verified
 
+- `npm run test:runners` — the 14 non-e2e suites, unchanged, under **Jest** (14 suites, 106/106) and
+  **Vitest** (14 files, 106/106), against 106/106 for the same 14 under `node:test`: one source of
+  tests, three runners. The two browser suites stay on the run `npm test` does, which is 120/120.
 - `npm test` — 120/120, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
   protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
   the queue against its own file store, a package against a tampered archive, a legacy export against
@@ -382,7 +385,7 @@ including a dispatched `queue.addItem` flow that is asserted on the queue file i
 ## Layout
 
 ```
-src/cli.ts             run / validate / activities / ui / pick / doctor / init / queue / robot
+src/cli.ts             run / validate / activities / ui / pick / doctor / record / init / queue / robot
 src/workflow/          the format: what a workflow is, and how a target is named
   model.ts             workflow + step model, validation, action aliases
   selector-chain.ts    selector-chain parsing (`<html/><webctrl/>` form)
@@ -390,20 +393,20 @@ src/engine/            executing one: the runtime, and what its steps read and w
   engine.ts            step execution, resilience, variables, logging
   targeting.ts         strict / fuzzy / anchor / idx resolution
   store.ts             local queue, settings (JSON/CSV/XLSX), files, tables
+  word.ts              .docx read/write (the zip codec comes from project/pack.ts)
 src/project/           the files a project is made of
   templates.ts         project templates (basic, transactional)
   pack.ts              the package format (zip + manifest, node:zlib)
   import.ts            the legacy-export importer (XAML → JSON + PORTING-REPORT.md)
-src/services/          steps that need something outside Node
+src/services/          the parts that reach outside the process
   gaps.ts              mail, PDF, Google Sheets, HITL, Windows UIA
+  webdriver.ts         raw W3C WebDriver client (mobile.*, Appium/Selenium/chromedriver)
+  doctor.ts            environment diagnostics: collectors, profiles, report / zip
 src/ui/                the Studio
   server.ts            API + SSE run stream + the static page
   pick.ts              the pick code path (CLI verb and Studio button)
+  recorder.ts          the recorder (DOM events → a draft workflow)
 src/robot/aro.ts       the orchestrator protocol (robot side)
-src/doctor.ts          environment diagnostics: collectors, profiles, report / zip
-src/recorder.ts        the recorder (DOM events → a draft workflow)
-src/webdriver.ts       raw W3C WebDriver client (mobile.*, Appium/Selenium/chromedriver)
-src/word.ts            .docx read/write over the project zip codec
 ui/                    the Studio page (index.html, app.js, style.css) — no build step
 test/support/          the shims that let one suite run under node:test, Jest or Vitest
 jest.config.mjs        Jest: ESM + Babel type-strip, the non-e2e suite set

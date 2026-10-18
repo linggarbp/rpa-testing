@@ -18,8 +18,8 @@ import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { parseWorkflow, validateWorkflow } from './model.js';
-import { writeArchive } from './pack.js';
+import { parseWorkflow, validateWorkflow } from '../workflow/model.js';
+import { writeArchive } from '../project/pack.js';
 
 export const DOCTOR_PROFILES = ['default', 'web', 'robot'] as const;
 export type DoctorProfile = (typeof DOCTOR_PROFILES)[number];

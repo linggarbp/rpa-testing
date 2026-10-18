@@ -51,7 +51,7 @@ Adopted in this repo's own vocabulary, as `heal: off | recommend | auto` on a **
 The healing pass itself is local and evidence-only — `relaxed-fuzzy` re-scores the declared
 attributes with the hard gates dropped; `resemblance` re-searches by hints read out of the selector
 (id / name / class / `[attr=v]` / text). Same similarity function fuzzy matching already uses; no
-service, no ML. Code: `src/targeting.ts`, `src/engine.ts`. Tests: `test/heal.test.ts`.
+service, no ML. Code: `src/engine/targeting.ts`, `src/engine/engine.ts`. Tests: `test/heal.test.ts`.
 
 ## Adopted: `rpa doctor` diagnostics
 
@@ -65,11 +65,11 @@ Adopted as `rpa doctor`:
   (playwright + chromium executable), `session` (display/wayland, macOS permissions note), `tools`
   (pdftotext, PowerShell), `project` (workflow validation + writability);
 - profiles: `default | web | robot` select the set;
-- `--out report.zip` writes a one-entry archive (our own zip code, `src/pack.ts`); `--out *.json`
+- `--out report.zip` writes a one-entry archive (our own zip code, `src/project/pack.ts`); `--out *.json`
   writes it plain; `--json` prints it.
 
 Cross-platform by construction: platform differences appear as facts in the report, never as
-crashes. Code: `src/doctor.ts`. Tests: `test/doctor.test.ts`.
+crashes. Code: `src/services/doctor.ts`. Tests: `test/doctor.test.ts`.
 
 ## Adopted: the web recorder (`rpa record`)
 
@@ -116,7 +116,7 @@ exporters, the Workflow-file (XAML) mapper, allow/deny lists, hotkey triggers.
 - **Queue lifecycle extras** — postpone-with-due-date, per-item progress, wait-for-new-item are in
   the same family as our `queue.*`; natural follow-ups.
 - **Selector migration** — the migration tool rewrites legacy selector arguments into modern ones.
-  Reading the legacy form already works (`src/selector-chain.ts`); an author-time converter
+  Reading the legacy form already works (`src/workflow/selector-chain.ts`); an author-time converter
   (`rpa upgrade`) is the follow-up.
 - **Web-driver selector engine** — the browser driver delegates fuzzy scoring to its content script:
   `max(0.999 × LevenshteinRatio, 0.95 × TokenSortRatio)` compared against a `fuzzyLevel`, with a

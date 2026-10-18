@@ -155,7 +155,7 @@ second runtime: the engine only ever executes JSON, and a converted file is an o
 - `test/robotProtocol.test.ts` — a fake orchestrator that records every call and asserts the
   protocol: enrol, heartbeat, claim, logs, cancel, finalize — including the failure path.
 
-Runners: the suites import `test` from `node:test` and nothing else, so the eight headless files run
-unchanged under Jest (`jest.config.mjs`) and Vitest (`vitest.config.ts`) as well — each maps the
+Runners: the suites import `test` from `node:test` and nothing else, so every suite except the two
+`.e2e` files runs unchanged under Jest (`jest.config.mjs`) and Vitest (`vitest.config.ts`) as well — each maps the
 `node:test` specifier to a shim in `test/support/` that speaks the runner's own API and keeps the skip
 reason. Only the two `.e2e` files are pinned to `npm test`, which is where a browser is guaranteed.

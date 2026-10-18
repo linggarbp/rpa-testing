@@ -8,8 +8,8 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { DOCTOR_PROFILES, runDoctor } from '../src/doctor.js';
-import { readArchive } from '../src/pack.js';
+import { DOCTOR_PROFILES, runDoctor } from '../src/services/doctor.js';
+import { readArchive } from '../src/project/pack.js';
 
 test('the default profile reports runtime, dependencies and tools as one JSON object', async () => {
   const report = await runDoctor();

@@ -4,7 +4,7 @@
  * speak this protocol; only the subset the `mobile.*` steps use is implemented, and responses are
  * read in their W3C shapes (Appium 2 answers exactly these).
  *
- * `MobileDriver` is the seam: this raw client is the default, and `src/webdriverio-driver.ts`
+ * `MobileDriver` is the seam: this raw client is the default, and `src/services/webdriverio-driver.ts`
  * implements the same interface on top of WebdriverIO for teams already on that stack.
  */
 export interface WebDriverStartOptions {

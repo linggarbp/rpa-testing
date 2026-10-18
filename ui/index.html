@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rpa-testing — Studio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">rpa<span>·</span>studio</div>
+  <select id="workflow-picker" title="Workflow file"></select>
+  <input id="project-dir" spellcheck="false" title="Project folder the server is serving">
+  <div class="spacer"></div>
+  <span id="status" class="pill">idle</span>
+  <button id="save" class="ghost">Save</button>
+  <button id="run" class="primary">▶ Run</button>
+</header>
+
+<div id="breadcrumb" class="breadcrumb"></div>
+
+<main>
+  <aside id="palette">
+    <input id="palette-filter" placeholder="filter activities…" spellcheck="false">
+    <div id="palette-groups"></div>
+  </aside>
+
+  <section id="canvas">
+    <div id="steps"></div>
+    <div id="errors"></div>
+  </section>
+
+  <aside id="inspector">
+    <div class="tabs">
+      <button data-tab="props" class="active">Properties</button>
+      <button data-tab="console">Console</button>
+      <button data-tab="queue">Queue</button>
+    </div>
+
+    <div id="tab-props" class="tab-panel">
+      <div class="hint" id="props-hint">Select a step to edit it, or click an activity on the left to add one.</div>
+      <div id="props"></div>
+    </div>
+
+    <div id="tab-console" class="tab-panel hidden">
+      <div class="row">
+        <span id="run-summary" class="hint">no run yet</span>
+        <div class="spacer"></div>
+        <button id="clear-console" class="ghost small">clear</button>
+      </div>
+      <pre id="console"></pre>
+    </div>
+
+    <div id="tab-queue" class="tab-panel hidden">
+      <div class="row">
+        <input id="queue-name" placeholder="queue name" spellcheck="false">
+        <button id="queue-load" class="ghost small">load</button>
+      </div>
+      <div id="queue-counts" class="hint"></div>
+      <table id="queue-table"><tbody></tbody></table>
+      <div class="row">
+        <input id="queue-ref" placeholder="reference">
+        <input id="queue-data" placeholder='{"amount":"10"}' spellcheck="false">
+        <button id="queue-add" class="ghost small">add item</button>
+      </div>
+    </div>
+  </aside>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

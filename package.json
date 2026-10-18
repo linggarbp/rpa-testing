@@ -1,0 +1,32 @@
+{
+  "name": "rpa-testing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "rpa-testing — a personal RPA toolkit: JSON workflows, a step engine, a local Studio UI, and a robot client for an orchestrator.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "rpa": "dist/cli.js"
+  },
+  "scripts": {
+    "rpa": "tsx src/cli.ts",
+    "ui": "tsx src/ui/server.ts",
+    "build": "tsc",
+    "test": "tsc --noEmit -p tsconfig.test.json && node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "optionalDependencies": {
+    "imapflow": "^2.5.2",
+    "nodemailer": "^10.1.2"
+  }
+}

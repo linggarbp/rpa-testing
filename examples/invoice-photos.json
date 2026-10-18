@@ -1,0 +1,15 @@
+{
+  "name": "invoice-photos",
+  "description": "Walk a folder of invoice photos: OCR each one, and log the amount. Desktop steps drive the machine the robot runs on.",
+  "steps": [
+    { "type": "control", "action": "foreach", "items": "[\"invoice-1.png\",\"invoice-2.png\"]", "itemName": "photo", "steps": [
+      { "type": "ocr", "action": "recognize", "imagePath": "/tmp/${photo}", "saveAs": "text" },
+      { "type": "control", "action": "log", "message": "${photo}: ${text}" }
+    ] },
+    { "type": "desktop", "action": "move", "x": 400, "y": 300, "delayBeforeMs": 300 },
+    { "type": "desktop", "action": "click" },
+    { "type": "desktop", "action": "type", "text": "${text}" },
+    { "type": "desktop", "action": "pressKey", "keys": ["LeftControl", "S"] },
+    { "type": "desktop", "action": "screenshot", "fileName": "after-save" }
+  ]
+}

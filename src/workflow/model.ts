@@ -7,9 +7,8 @@
  * than inside it.
  */
 
-export type StepType = 'web' | 'control' | 'api' | 'desktop' | 'ocr' | 'ai-vision'
-  | 'queue' | 'file' | 'excel' | 'data' | 'config' | 'mail' | 'pdf' | 'gsheet' | 'hitl'
-  | 'mobile' | 'word';
+export type StepType = 'control' | 'api' | 'desktop' | 'ocr' | 'ai-vision'
+  | 'queue' | 'file' | 'excel' | 'data' | 'config' | 'mail' | 'pdf' | 'gsheet' | 'hitl' | 'word';
 
 /**
  * What happens when every declared targeting method failed:
@@ -21,25 +20,23 @@ export type StepType = 'web' | 'control' | 'api' | 'desktop' | 'ocr' | 'ai-visio
  */
 export type HealMode = 'off' | 'recommend' | 'auto';
 
-/** What `target` accepts: the targeting methods, in the order they are tried. */
+/** What `target` accepts: the ways a desktop step finds its thing, in the order they are tried. */
 export interface TargetSpec {
-  /** Strict selector (Playwright/CSS syntax). Tried first. */
-  strict?: string;
-  /** Further strict selectors, tried in order after `strict` — what survives a page that changed. */
-  strictAny?: string[];
-  /** Fuzzy selector: a tag plus attribute values, scored instead of matched exactly. */
-  fuzzy?: FuzzySpec;
+  /** Accessibility properties (Windows UI Automation): every listed one must match. */
+  uia?: UiaSpec;
+  /** A template to find on screen — the backend's image search, scored against a threshold. */
+  image?: ImageSpec;
+  /** A screen point: the case where the workflow already knows where the thing is. */
+  point?: PointSpec;
   /** An anchor: a second element that disambiguates by its geometric relation to the target. */
   anchor?: AnchorSpec;
-  /** 1-based occurrence when a strict selector matches several elements. */
+  /** 1-based occurrence when several candidates match. */
   idx?: number;
-  /** A raw selector chain (`<html …/><webctrl …/>`), parsed by src/workflow/selector-chain.ts. */
+  /** The recorded chain this target came from (`<wnd …/><ctrl …/>`) — kept verbatim, for the log. */
   selectorChain?: string;
-  /** Native text targeting — Playwright's `text=` engine. */
-  text?: string;
-  /** Match the text exactly instead of by substring. */
-  textExact?: boolean;
-  /** The application window a selector chain was scoped to (informational: logged, not matched). */
+  /** Property scoring: accessibility properties scored by similarity instead of matched exactly. */
+  fuzzy?: FuzzySpec;
+  /** The application window a recorded chain was scoped to (matched against the window title). */
   scope?: Record<string, string>;
   /** Recovery when every method above fails. Defaults to the step's or the engine's mode. */
   heal?: HealMode;
@@ -47,23 +44,48 @@ export interface TargetSpec {
   healThreshold?: number;
 }
 
-/** Post-action verification: wait for a target after the action ran. */
+/** The accessibility properties a target is found by, in the order a person would trust them. */
+export interface UiaSpec {
+  /** The stable identifier an application gives the control — the least likely to change. */
+  automationId?: string;
+  /** The accessible name: what the control says. */
+  name?: string;
+  /** The window class, for controls that expose nothing else. */
+  className?: string;
+  /** The control type as UI Automation names it, e.g. Button, Edit, Text. */
+  controlType?: string;
+  /** A path of names/ids from the window down, when the properties alone are ambiguous. */
+  path?: string;
+}
+
+export interface ImageSpec {
+  /** The template file, project-relative like every other path a step takes. */
+  path: string;
+  /** Minimum match score (0..1). Default: the backend's, 0.9 in nut.js. */
+  threshold?: number;
+  /** Only look inside this screen region. */
+  region?: { left: number; top: number; width: number; height: number };
+}
+
+export interface PointSpec {
+  x: number;
+  y: number;
+}
+
+/** Post-action verification: after the action, wait until the target resolves — proof the app reacted. */
 export interface VerifySpec {
   target?: TargetSpec;
-  selector?: string;
-  selectors?: string[];
   timeoutMs?: number;
-  state?: 'visible' | 'attached';
 }
 
 export interface FuzzySpec {
-  /** Element tag, e.g. BUTTON / INPUT / A. Case-insensitive. */
-  tag: string;
-  /** Expected attribute values, e.g. { aaname: "Sign in" } (aaname ≈ accessible name/text). */
-  attributes?: Record<string, string>;
-  /** Per attribute: 'exact' (must equal), 'fuzzy' (similarity), or a number (minimum similarity). */
+  /** The control type as UI Automation names it, e.g. Button. Case-insensitive. */
+  controlType?: string;
+  /** Expected property values, e.g. { name: "Sign in", automationId: "submit" }. */
+  properties?: Record<string, string>;
+  /** Per property: 'exact' (must equal), 'fuzzy' (similarity), or a number (minimum similarity). */
   levels?: Record<string, 'exact' | 'fuzzy' | number>;
-  /** Expected element text, scored like a fuzzy attribute. */
+  /** Expected element text, scored like a property. */
   text?: string;
   /** Minimum score (0..1) for a candidate to count as a match. Default 0.7. */
   threshold?: number;
@@ -119,16 +141,11 @@ export interface Workflow {
   steps: Step[];
 }
 
-export const WEB_ACTIONS = [
-  'goto', 'click', 'type', 'hover', 'selectOption', 'getText', 'getAttribute',
-  'elementExists', 'waitForElement', 'pressKeys', 'scroll', 'screenshot', 'assertText',
-  'extractTable'
-] as const;
 export const CONTROL_ACTIONS = [
   'delay', 'setVar', 'math', 'log', 'if', 'switch', 'repeat', 'while', 'foreach',
   'try', 'throw', 'retryScope', 'invoke', 'stateMachine'
 ] as const;
-export const API_ACTIONS = ['request', 'load'] as const;
+export const API_ACTIONS = ['request'] as const;
 export const DESKTOP_ACTIONS = [
   'move', 'click', 'doubleClick', 'rightClick', 'type', 'scroll', 'pressKey', 'drag',
   'clipboardCopy', 'screenshot', 'waitForImage', 'clickImage', 'uia'
@@ -145,13 +162,10 @@ export const MAIL_ACTIONS = ['send', 'receive'] as const;
 export const PDF_ACTIONS = ['readText'] as const;
 export const GSHEET_ACTIONS = ['append', 'read'] as const;
 export const HITL_ACTIONS = ['ask'] as const;
-/** Mobile over the raw WebDriver protocol — Appium answers it; so does Selenium. */
-export const MOBILE_ACTIONS = ['session', 'end', 'tap', 'type', 'getText', 'waitFor', 'swipe', 'screenshot'] as const;
 /** Word documents — .docx is a zip of XML; read and written with the stdlib. */
 export const WORD_ACTIONS = ['readText', 'writeText'] as const;
 
 const ACTIONS: Record<StepType, readonly string[]> = {
-  web: WEB_ACTIONS,
   control: CONTROL_ACTIONS,
   api: API_ACTIONS,
   desktop: DESKTOP_ACTIONS,
@@ -166,7 +180,6 @@ const ACTIONS: Record<StepType, readonly string[]> = {
   pdf: PDF_ACTIONS,
   gsheet: GSHEET_ACTIONS,
   hitl: HITL_ACTIONS,
-  mobile: MOBILE_ACTIONS,
   word: WORD_ACTIONS
 };
 
@@ -175,7 +188,6 @@ const ACTIONS: Record<StepType, readonly string[]> = {
  * means "loop the rows of a sheet" under `excel` and must not become `control.foreach`.
  */
 const ACTION_ALIASES: Record<StepType, Record<string, string>> = {
-  web: { navigate: 'goto', open: 'goto', openbrowser: 'goto', fill: 'type', typeinto: 'type', settext: 'type', keypress: 'pressKeys', pressshortcut: 'pressKeys' },
   control: { wait: 'delay', assign: 'setVar', multipleassign: 'setVar', logmessage: 'log', writeline: 'log', increment: 'math', trycatch: 'try', retryscope: 'retryScope', invokeWorkflowFile: 'invoke', invokeWorkflow: 'invoke', statemachine: 'stateMachine' },
   api: { http: 'request' },
   desktop: { presskeys: 'pressKey', uiautomation: 'uia', uiaclick: 'uia', uiatype: 'uia', uiagettext: 'uia' },
@@ -190,7 +202,6 @@ const ACTION_ALIASES: Record<StepType, Record<string, string>> = {
   pdf: { readpdftext: 'readText' },
   gsheet: { writersheet: 'append', appendsheet: 'append', googlesheets: 'append', gsuiteapplication: 'append' },
   hitl: { inputdialog: 'ask', formtask: 'ask', waitforformtask: 'ask' },
-  mobile: { start: 'session', close: 'end', click: 'tap', setvalue: 'type', scroll: 'swipe', screenshot: 'screenshot' },
   word: { readdocx: 'readText', writedocx: 'writeText', readdocument: 'readText', writedocument: 'writeText' }
 };
 
@@ -266,10 +277,6 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
     if (!action || !actions.includes(action)) {
       errors.push(`${name} has an unsupported ${step.type} action "${String(step.action ?? '')}".`);
       return;
-    }
-
-    if (step.type === 'web' && action === 'extractTable' && String(step.table ?? '').trim() === '') {
-      errors.push(`${name} (web.extractTable) needs a "table" — the CSS selector of the table.`);
     }
 
     const body = (property: string) => {
@@ -378,29 +385,8 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
       if (String(step.range ?? '').trim() === '') errors.push(`${name} needs a "range", e.g. "Sheet1!A1".`);
     }
 
-    if (step.type === 'api' && action === 'load' && String(step.url ?? '').trim() === '') {
-      errors.push(`${name} (api.load) needs a "url".`);
-    }
-
-    if (step.type === 'mobile') {
-      if (action === 'session') {
-        const capabilities = step.capabilities;
-        if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities) || Object.keys(capabilities).length === 0) {
-          errors.push(`${name} (mobile.session) needs "capabilities" — e.g. { platformName: "Android", app: … }.`);
-        }
-        const driver = step.driver;
-        if (driver !== undefined && driver !== 'raw' && driver !== 'webdriverio') {
-          errors.push(`${name} (mobile.session) has an unknown driver "${String(driver)}" — raw | webdriverio.`);
-        }
-      }
-      if (['tap', 'type', 'getText', 'waitFor'].includes(action)) {
-        if (String(step.using ?? '').trim() === '') errors.push(`${name} (mobile.${action}) needs "using" — accessibility id | id | xpath | class name.`);
-        if (String(step.value ?? '').trim() === '') errors.push(`${name} (mobile.${action}) needs "value" — the element to find.`);
-      }
-      if (action === 'type' && step.text === undefined) errors.push(`${name} (mobile.type) needs "text".`);
-      if (action === 'swipe' && !['left', 'right', 'up', 'down'].includes(String(step.direction ?? ''))) {
-        errors.push(`${name} (mobile.swipe) needs "direction" = left | right | up | down.`);
-      }
+    if (step.type === 'api' && String(step.url ?? '').trim() === '') {
+      errors.push(`${name} (api.request) needs a "url".`);
     }
 
     if (step.type === 'word') {
@@ -437,18 +423,16 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
       errors.push(`${name} › target has an unknown heal mode "${String(targetHeal)}" (off | recommend | auto).`);
     }
 
-    // A targeting action without any target can only fail at run time; say so now.
-    const needsTarget = step.type === 'web'
-      && ['click', 'type', 'hover', 'selectOption', 'getText', 'getAttribute', 'waitForElement', 'pressKeys', 'scroll'].includes(action)
-      && !step.selector && !(Array.isArray(step.selectors) && step.selectors.length > 0) && !step.target;
-    if (needsTarget) errors.push(`${name} (web.${action}) needs a selector or a target.`);
+    // An image action without an image can only fail at run time; say so now.
+    if (step.type === 'desktop' && (action === 'clickImage' || action === 'waitForImage')
+      && String(step.imagePath ?? '').trim() === '' && !step.target) {
+      errors.push(`${name} (desktop.${action}) needs an "imagePath" (or a target carrying one).`);
+    }
 
     if (step.verify) {
-      const verify = step.verify as { target?: unknown; selector?: unknown; selectors?: unknown };
-      const hasTarget = verify.target !== undefined
-        || (typeof verify.selector === 'string' && verify.selector.trim() !== '')
-        || (Array.isArray(verify.selectors) && verify.selectors.length > 0);
-      if (!hasTarget) errors.push(`${name} › verify needs a target or a selector.`);
+      const verify = step.verify as { target?: unknown };
+      const hasTarget = verify.target !== undefined;
+      if (!hasTarget) errors.push(`${name} › verify needs a target.`);
     }
   });
 }

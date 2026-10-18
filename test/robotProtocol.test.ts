@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ENGINE_CAPABILITIES, AroRobot } from '../src/robot/aro.js';
+import { backendReport } from '../src/services/desktop/backend.js';
 import { QueueStore } from '../src/engine/store.js';
 
 interface Call {
@@ -95,12 +96,14 @@ async function withFakeAro(run: (base: string, state: { calls: Call[]; finalized
 
 test('the robot enrols with the project API key and proves its capabilities', async () => {
   await withFakeAro(async (base, state) => {
-    const robot = new AroRobot({ apiUrl: base, projectId: 'p', apiKey: 'project-key', name: 'test-host', capabilities: ['web', 'control'] });
+    const robot = new AroRobot({ apiUrl: base, projectId: 'p', apiKey: 'project-key', name: 'test-host', capabilities: ['desktop', 'control'] });
     const report = await robot.preflight();
 
     assert.equal(report.ok, true, robot.describe(report));
     assert.equal(report.robotId, '44444444-5555-6666-7777-888888888888');
-    assert.ok(report.proved.includes('web'), 'playwright is installed in this repo, so web must be proved');
+    // desktop is proved exactly when a backend answers on this host — a headless box proves nothing.
+    const backends = await backendReport();
+    assert.equal(report.proved.includes('desktop'), backends.some((row) => row.available));
     assert.ok(report.proved.includes('control'));
 
     const enrol = state.calls.find((call) => call.path.endsWith('/enroll'));
@@ -111,7 +114,7 @@ test('the robot enrols with the project API key and proves its capabilities', as
     const heartbeat = state.calls.find((call) => call.path.endsWith('/heartbeat'));
     assert.equal(heartbeat?.headers['x-aro-robot-key'], 'machine-key-1');
     const heartbeatBody = heartbeat?.body as { probedCapabilities: string; busy: boolean };
-    assert.deepEqual(JSON.parse(heartbeatBody.probedCapabilities).includes('web'), true);
+    assert.deepEqual(JSON.parse(heartbeatBody.probedCapabilities).includes('control'), true);
   });
 });
 
@@ -202,7 +205,7 @@ test('the robot proves every engine family it can run, and a dispatched queue fl
 
     // What an orchestrator routes on: the families this host can actually run are the proved ones.
     assert.deepEqual(report.declared, [...ENGINE_CAPABILITIES]);
-    for (const capability of ['web', 'control', 'queue', 'excel', 'file', 'data', 'config', 'gsheet', 'hitl']) {
+    for (const capability of ['control', 'queue', 'excel', 'file', 'data', 'config', 'gsheet', 'hitl']) {
       assert.ok(report.proved.includes(capability), `${capability} should be proved (${report.proved.join(', ')})`);
     }
     // mail and pdf are proved only when this host has the module or the binary.

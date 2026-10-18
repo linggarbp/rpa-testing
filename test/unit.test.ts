@@ -20,22 +20,32 @@ test('similarity is case/space insensitive and rewards containment', () => {
   assert.equal(similarity('', 'anything'), 0);
 });
 
-test('a fuzzy candidate is scored, and an exact attribute is a hard gate', () => {
-  const spec: FuzzySpec = { tag: 'BUTTON', attributes: { aaname: 'Sign in' }, levels: { aaname: 'fuzzy' } };
-  assert.ok(scoreCandidate({ attributes: { aaname: 'Sign in' }, text: '' }, spec) === 1);
-  assert.ok(scoreCandidate({ attributes: { aaname: 'Sign in to continue' }, text: '' }, spec) >= 0.9);
-  assert.ok(scoreCandidate({ attributes: { aaname: 'Cancel' }, text: '' }, spec) < 0.5);
+test('a candidate is scored on its properties, and an exact one is a hard gate', () => {
+  const spec: FuzzySpec = { properties: { name: 'Sign in' }, levels: { name: 'fuzzy' } };
+  const candidate = (name: string) => ({ properties: { name, automationId: 'submit', controlType: 'Button' }, text: name });
+  assert.equal(scoreCandidate(candidate('Sign in'), spec), 1);
+  assert.ok(scoreCandidate(candidate('Sign in to continue'), spec) >= 0.9);
+  assert.ok(scoreCandidate(candidate('Cancel'), spec) < 0.5);
 
-  const exact: FuzzySpec = { tag: 'BUTTON', attributes: { id: 'submit' }, levels: { id: 'exact' } };
-  assert.equal(scoreCandidate({ attributes: { id: 'submit' }, text: '' }, exact), 1);
-  assert.equal(scoreCandidate({ attributes: { id: 'submit-2' }, text: '' }, exact), 0, 'exact mismatch zeroes the score');
+  const exact: FuzzySpec = { properties: { automationId: 'submit' }, levels: { automationId: 'exact' } };
+  assert.equal(scoreCandidate(candidate('Sign in'), exact), 1);
+  assert.equal(scoreCandidate({ properties: { automationId: 'submit-2' }, text: '' }, exact), 0, 'exact mismatch zeroes the score');
+  // A spec that asks for nothing scores nothing, however good the candidate looks.
+  assert.equal(scoreCandidate(candidate('Sign in'), {}), 0);
+});
+
+test('a control type is matched case-insensitively, and text is scored like a property', () => {
+  const candidate = { properties: { controlType: 'Button', name: 'Save' }, text: 'Save document' };
+  assert.equal(scoreCandidate(candidate, { controlType: 'button' }), 1);
+  assert.ok(scoreCandidate(candidate, { text: 'Save document' }) === 1);
+  assert.ok(scoreCandidate(candidate, { properties: { name: 'Save' }, text: 'Save document' }) === 1);
 });
 
 test('anchor relations compare boxes the way a human reads a form', () => {
-  const label = { x: 10, y: 100, width: 80, height: 20 };
-  const right = { x: 120, y: 100, width: 200, height: 20 };
-  const below = { x: 10, y: 140, width: 200, height: 20 };
-  const far = { x: 900, y: 700, width: 10, height: 10 };
+  const label = { left: 10, top: 100, width: 80, height: 20 };
+  const right = { left: 120, top: 100, width: 200, height: 20 };
+  const below = { left: 10, top: 140, width: 200, height: 20 };
+  const far = { left: 900, top: 700, width: 10, height: 10 };
 
   assert.equal(relationHolds('right', right, label), true);
   assert.equal(relationHolds('left', right, label), false);
@@ -44,15 +54,19 @@ test('anchor relations compare boxes the way a human reads a form', () => {
   assert.ok(centerDistance(right, label) < centerDistance(far, label));
 });
 
-test('targetFromStep speaks both shapes: structured target and Aro selector/selectors', () => {
-  assert.deepEqual(targetFromStep({ type: 'web' }), null);
-  assert.deepEqual(targetFromStep({ type: 'web', selector: '#a' }), { strict: '#a' });
-  assert.deepEqual(
-    targetFromStep({ type: 'web', selector: '#a', selectors: ['#b', ''] }),
-    { strict: '#a', strictAny: ['#b'] }
-  );
-  const structured = { strict: 'button', idx: 2 };
-  assert.equal(targetFromStep({ type: 'web', target: structured }), structured);
+test('targetFromStep reads every shape a definition arrives in', () => {
+  assert.equal(targetFromStep({ type: 'desktop' }), null);
+
+  const chained = targetFromStep({ type: 'desktop', selector: "<wnd app='notepad.exe' /><ctrl id='textBox1' name='Text editor' />" });
+  assert.equal(chained?.uia?.automationId, 'textBox1');
+  assert.equal(chained?.uia?.name, 'Text editor');
+
+  assert.deepEqual(targetFromStep({ type: 'desktop', name: 'Save' })?.uia, { name: 'Save' });
+  assert.equal(targetFromStep({ type: 'desktop', imagePath: 'assets/save.png', confidence: 0.8 })?.image?.threshold, 0.8);
+  assert.deepEqual(targetFromStep({ type: 'desktop', x: 12, y: 34 })?.point, { x: 12, y: 34 });
+
+  const structured = { fuzzy: { properties: { name: 'Save' } }, idx: 2 };
+  assert.equal(targetFromStep({ type: 'desktop', target: structured }), structured);
 });
 
 // ── Model ───────────────────────────────────────────────────────────────────────────────────────
@@ -67,23 +81,23 @@ test('a bare array parses as a workflow; an object keeps its variables', () => {
 
 test('validation names the offending step and refuses unknown actions and shapes', () => {
   const errors = validateWorkflow(parseWorkflow(JSON.stringify([
-    { type: 'web', action: 'click' },                     // no target
+    { type: 'desktop', action: 'clickImage' },            // no imagePath
     { type: 'control', action: 'if' },                    // no condition
     { type: 'control', action: 'foreach', steps: [] },    // no items
     { type: 'quantum', action: 'run' }                    // unknown type
   ])));
   assert.equal(errors.length, 4, errors.join(' | '));
-  assert.ok(errors.some((e) => e.includes('needs a selector or a target')));
+  assert.ok(errors.some((e) => e.includes('needs an "imagePath"')));
   assert.ok(errors.some((e) => e.includes('needs a condition')));
   assert.ok(errors.some((e) => e.includes('needs "items"')));
   assert.ok(errors.some((e) => e.includes('unsupported type')));
 });
 
 test('action aliases fold into the canonical name (Aro-compatible)', () => {
-  assert.equal(normalizeAction('navigate', 'web'), 'goto');
-  assert.equal(normalizeAction('fill', 'web'), 'type');
+  assert.equal(normalizeAction('presskeys', 'desktop'), 'pressKey');
+  assert.equal(normalizeAction('uiaclick', 'desktop'), 'uia');
   assert.equal(normalizeAction(undefined, 'api'), 'request');
-  assert.equal(normalizeAction('Click', 'web'), 'click');
+  assert.equal(normalizeAction('Click', 'desktop'), 'click');
 });
 
 test('interpolation replaces ${name} and {{name}}, and blanks an unknown one', () => {

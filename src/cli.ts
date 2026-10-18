@@ -11,11 +11,10 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Engine, formatLogLine } from './engine/engine.js';
-import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS, MOBILE_ACTIONS, WORD_ACTIONS } from './workflow/model.js';
+import { parseWorkflow, validateWorkflow, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS, WORD_ACTIONS } from './workflow/model.js';
 import { AroRobot, ENGINE_CAPABILITIES } from './robot/aro.js';
 import { packProject, unpack } from './project/pack.js';
 import { importExport } from './project/import.js';
-import { pickTarget } from './ui/pick.js';
 import { QueueStore } from './engine/store.js';
 import { scaffoldBasic, scaffoldTransactional } from './project/templates.js';
 import { answerHuman, pendingHuman } from './services/gaps.js';
@@ -77,8 +76,6 @@ const HELP = `rpa-testing — a small, honest RPA toolkit
   rpa queue add <name> <ref> [json]   add a transaction item
   rpa hitl                     list pending human-in-the-loop questions
   rpa hitl answer <id> <value>  answer one (what hitl.ask waits for)
-  rpa pick <url>               click an element, get its target JSON (--out target.json)
-  rpa record <url>             record a browser session into a draft workflow (--out draft.json,
                                --max-seconds N, --headless)
   rpa doctor                   check this machine (--profile default|robot|web, --out report.zip, --json)
   rpa ui                       the Studio in a browser (--project <dir>, --port N, --no-open)
@@ -213,61 +210,18 @@ async function main(): Promise<number> {
 
     case 'activities': {
       const groups: Array<[string, readonly string[]]> = [
-        ['web', WEB_ACTIONS], ['control', CONTROL_ACTIONS], ['api', API_ACTIONS],
+        ['control', CONTROL_ACTIONS], ['api', API_ACTIONS],
         ['desktop', DESKTOP_ACTIONS], ['ocr', OCR_ACTIONS], ['ai-vision', VISION_ACTIONS],
         ['queue', QUEUE_ACTIONS], ['file', FILE_ACTIONS], ['excel', EXCEL_ACTIONS],
         ['data', DATA_ACTIONS], ['config', CONFIG_ACTIONS], ['mail', MAIL_ACTIONS],
         ['pdf', PDF_ACTIONS], ['gsheet', GSHEET_ACTIONS], ['hitl', HITL_ACTIONS],
-        ['mobile', MOBILE_ACTIONS], ['word', WORD_ACTIONS]
+        ['word', WORD_ACTIONS]
       ];
       for (const [type, actions] of groups) console.log(`${type.padEnd(10)} ${actions.join(', ')}`);
       console.log('\nEvery step also accepts: timeoutMs, retry, retryDelayMs, continueOnError, delayBeforeMs, delayAfterMs, saveAs, heal (off|recommend|auto).');
       return 0;
     }
 
-    case 'record': {
-      const url = positional[0];
-      if (!url) {
-        console.error('rpa record <url> --out <draft.json> [--max-seconds N] [--headless]');
-        return 2;
-      }
-      const out = values(flags, 'out')[0] ?? 'recorded.json';
-      const maxSeconds = Number(values(flags, 'max-seconds')[0] ?? 900);
-      let playwright: typeof import('playwright');
-      try {
-        playwright = await import('playwright');
-      } catch {
-        console.error('rpa record needs playwright: npm i playwright && npx playwright install chromium');
-        return 2;
-      }
-      const { startRecording } = await import('./ui/recorder.js');
-      const browser = await playwright.chromium.launch({ headless: flags.headless === true });
-      try {
-        const page = await browser.newPage();
-        const recorder = await startRecording(page, { maxMs: Math.max(5, maxSeconds) * 1000 });
-        console.log(`recording ${url} — click through the page; Stop (bottom-right) ends it. ${flags.headless === true ? '' : 'The browser window is yours to drive.'}`.trim());
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
-        const recorded = await recorder.stop();
-        if (recorded.steps.length === 0) {
-          console.error('nothing was recorded.');
-          return 1;
-        }
-        const workflow = { name: `recorded: ${url}`, steps: recorded.steps.map((entry) => entry.step) };
-        const errors = validateWorkflow(parseWorkflow(JSON.stringify(workflow)));
-        if (errors.length > 0) {
-          console.error(`the draft did not validate (that is a recorder bug, please report it):\n${errors.join('\n')}`);
-          return 1;
-        }
-        await mkdir(path.dirname(path.resolve(out)), { recursive: true });
-        await writeFile(out, `${JSON.stringify(workflow, null, 2)}\n`);
-        for (const [index, entry] of recorded.steps.entries()) console.log(`${String(index + 1).padStart(2)}. ${entry.description}`);
-        for (const note of recorded.dropped) console.log(`    · ${note}`);
-        console.log(`\nrecorded ${recorded.steps.length} step(s) → ${out} — review it, then: rpa run ${out}`);
-        return 0;
-      } finally {
-        await browser.close().catch(() => {});
-      }
-    }
 
     case 'doctor': {
       const { runDoctor, DOCTOR_PROFILES } = await import('./services/doctor.js');
@@ -356,28 +310,6 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    case 'pick': {
-      const url = positional[0];
-      if (!url) {
-        console.error('rpa pick needs a URL to open.');
-        return 2;
-      }
-      console.log('Click the element you want to drive (Ctrl+C to give up)…');
-      const step = await pickTarget(url, { timeoutMs: 5 * 60 * 1000 });
-      if (!step) {
-        console.error('nothing was picked.');
-        return 1;
-      }
-
-      const out = values(flags, 'out')[0];
-      const described = { ...step, action: values(flags, 'action')[0] ?? step.action };
-      if (out) {
-        await writeFile(out, JSON.stringify(described, null, 2) + '\n');
-        console.log(`step written to ${out}`);
-      }
-      console.log(JSON.stringify(described, null, 2));
-      return 0;
-    }
 
     case 'hitl': {
       const root = path.resolve(values(flags, 'project')[0] ?? '.');

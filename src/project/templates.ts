@@ -15,21 +15,21 @@ export interface ScaffoldResult {
   files: string[];
 }
 
-/** The starter: one workflow that opens a page, reads a heading and logs it. */
+/** The starter: one workflow that captures the screen, so a first run proves the desktop lane. */
 export async function scaffoldBasic(dir: string, name: string): Promise<ScaffoldResult> {
   const workflow = {
     name,
-    variables: { baseUrl: 'https://example.com' },
+    variables: {},
     steps: [
-      { type: 'web', action: 'goto', url: '${baseUrl}' },
-      { type: 'web', action: 'getText', selector: 'h1', saveAs: 'heading' },
-      { type: 'control', action: 'log', message: 'heading is ${heading}' }
+      { type: 'control', action: 'log', message: 'starting — replace these steps with the desktop.* ones this process needs' },
+      { type: 'desktop', action: 'screenshot', fileName: 'desktop' },
+      { type: 'control', action: 'log', message: 'screenshot written into the run folder' }
     ]
   };
   await mkdir(dir, { recursive: true });
   const main = path.join(dir, 'main.json');
   await writeFile(main, json(workflow));
-  await writeFile(path.join(dir, 'README.md'), `# ${name}\n\nRun it:\n\n    rpa run main.json --headed\n\nDispatch it from an Aro orchestrator:\n\n    rpa robot --api https://<aro> --project <projectId> --api-key <project API key>\n`);
+  await writeFile(path.join(dir, 'README.md'), `# ${name}\n\nRun it:\n\n    rpa run main.json\n\nDispatch it from an Aro orchestrator:\n\n    rpa robot --api https://<aro> --project <projectId> --api-key <project API key>\n`);
   return { dir, files: ['main.json', 'README.md'] };
 }
 

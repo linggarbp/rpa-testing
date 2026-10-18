@@ -346,23 +346,106 @@ function psString(value: string): string {
 }
 
 /** Run one UIA action on Windows. Returns the script's stdout (the element's text for getText). */
-export async function runUia(step: UiaStep, timeoutMs = 15000): Promise<string> {
-  if (process.platform !== 'win32') {
-    throw new Error(`desktop.uia drives Windows UI Automation and this host is ${process.platform}. Use desktop.* (nut.js) here, or run the robot on Windows.`);
-  }
-  const script = buildUiaScript(step);
+/** Run one PowerShell script and hand back its stdout, or the first stderr line as the error. */
+function runPowerShell(script: string, timeoutMs: number, what: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`desktop.uia timed out after ${timeoutMs}ms`)); }, timeoutMs);
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`${what} timed out after ${timeoutMs}ms`)); }, timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
     child.on('error', (error) => { clearTimeout(timer); reject(error); });
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`UIA failed (exit ${code}): ${stderr.trim() || stdout.trim()}`));
+      else reject(new Error(`${what} failed (exit ${code}): ${(stderr.trim() || stdout.trim()).split('\n')[0]}`));
     });
   });
+}
+
+export async function runUia(step: UiaStep, timeoutMs = 15000): Promise<string> {
+  if (process.platform !== 'win32') {
+    throw new Error(`desktop.uia drives Windows UI Automation and this host is ${process.platform}. Use desktop.* (nut.js) here, or run the robot on Windows.`);
+  }
+  return runPowerShell(buildUiaScript(step), timeoutMs, 'desktop.uia');
+}
+
+/** One control the accessibility API can see, as a target can be scored against it. */
+export interface ElementRecord {
+  name: string;
+  automationId: string;
+  className: string;
+  controlType: string;
+  box: { left: number; top: number; width: number; height: number };
+}
+
+/**
+ * The element dump script: every visible control inside the focused window, one JSON object per
+ * line. It is what makes property targeting real — the engine scores these records in JavaScript
+ * instead of asking the accessibility API one question at a time.
+ */
+export function buildUiaDumpScript(maxElements: number): string {
+  return [
+    'Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes',
+    '$auto = [System.Windows.Automation.AutomationElement]',
+    '$el = $auto::FocusedElement',
+    'if ($null -eq $el) { $el = $auto::RootElement }',
+    '$walk = [System.Windows.Automation.TreeWalker]::ControlViewWalker',
+    'while ($true) { $parent = $walk.GetParent($el); if ($null -eq $parent) { break }; $el = $parent }',
+    '$all = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)',
+    '$index = 0',
+    'foreach ($node in $all) {',
+    `  if ($index -ge ${maxElements}) { break }`,
+    '  $r = $node.Current.BoundingRectangle',
+    '  if ($r.IsEmpty) { continue }',
+    "  $ct = $node.Current.ControlType.ProgrammaticName -replace '^ControlType\.',''",
+    '  $index++',
+    '  [pscustomobject]@{',
+    '    name = $node.Current.Name',
+    '    automationId = $node.Current.AutomationId',
+    '    className = $node.Current.ClassName',
+    '    controlType = $ct',
+    '    left = [int]$r.Left; top = [int]$r.Top; width = [int]$r.Width; height = [int]$r.Height',
+    '  } | ConvertTo-Json -Compress',
+    '}'
+  ].join('; ');
+}
+
+/**
+ * Every element the accessibility API sees inside the focused window. Windows only, exactly like
+ * `desktop.uia`: everywhere else it fails with that sentence, and image or OCR targeting is the
+ * honest answer there.
+ */
+export async function dumpUiaElements(options: { max?: number; timeoutMs?: number } = {}): Promise<ElementRecord[]> {
+  if (process.platform !== 'win32') {
+    throw new Error(
+      `element targeting drives Windows UI Automation and this host is ${process.platform}. ` +
+      'Use an image or point target here, or run the robot on Windows.'
+    );
+  }
+  const output = await runPowerShell(buildUiaDumpScript(options.max ?? 400), options.timeoutMs ?? 20000, 'desktop element dump');
+  const records: ElementRecord[] = [];
+  for (const line of output.split('\n')) {
+    const text = line.trim();
+    if (text === '' || !text.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      records.push({
+        name: String(parsed['name'] ?? ''),
+        automationId: String(parsed['automationId'] ?? ''),
+        className: String(parsed['className'] ?? ''),
+        controlType: String(parsed['controlType'] ?? ''),
+        box: {
+          left: Number(parsed['left'] ?? 0),
+          top: Number(parsed['top'] ?? 0),
+          width: Number(parsed['width'] ?? 0),
+          height: Number(parsed['height'] ?? 0)
+        }
+      });
+    } catch {
+      /* a line that is not a record is not a reason to fail the whole dump */
+    }
+  }
+  return records;
 }

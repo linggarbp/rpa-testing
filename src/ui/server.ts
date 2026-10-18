@@ -15,15 +15,13 @@ import { fileURLToPath } from 'node:url';
 import { Engine, formatLogLine } from '../engine/engine.js';
 import {
   CONFIG_ACTIONS, CONTROL_ACTIONS, DATA_ACTIONS, DESKTOP_ACTIONS, EXCEL_ACTIONS, FILE_ACTIONS,
-  GSHEET_ACTIONS, HITL_ACTIONS, MAIL_ACTIONS, OCR_ACTIONS, PDF_ACTIONS, QUEUE_ACTIONS, VISION_ACTIONS, WEB_ACTIONS, API_ACTIONS,
+  GSHEET_ACTIONS, HITL_ACTIONS, MAIL_ACTIONS, OCR_ACTIONS, PDF_ACTIONS, QUEUE_ACTIONS, VISION_ACTIONS, API_ACTIONS,
   parseWorkflow, validateWorkflow, type Workflow
 } from '../workflow/model.js';
 import { QueueStore } from '../engine/store.js';
 import { answerHuman, pendingHuman } from '../services/gaps.js';
-import { pickTarget } from './pick.js';
 
 const CATALOG: Array<{ type: string; actions: readonly string[] }> = [
-  { type: 'web', actions: WEB_ACTIONS },
   { type: 'control', actions: CONTROL_ACTIONS },
   { type: 'queue', actions: QUEUE_ACTIONS },
   { type: 'excel', actions: EXCEL_ACTIONS },
@@ -175,18 +173,6 @@ export async function startUi(options: UiOptions): Promise<UiHandle> {
           return void await send(response, 200, { ok: true, id, prompt });
         }
 
-        if (url.pathname === '/api/pick' && request.method === 'POST') {
-          const body = await readJson(request);
-          const target = String(body.url ?? '');
-          if (!target) return void await send(response, 400, { error: 'a url is required' });
-          // The same code path as `rpa pick`, so the button and the verb cannot drift apart.
-          const step = await pickTarget(target, {
-            timeoutMs: Number(body.timeoutMs ?? 120000),
-            headless: body.headless === true
-          });
-          if (!step) return void await send(response, 408, { error: 'nothing was picked before the timeout' });
-          return void await send(response, 200, { step });
-        }
 
         if (url.pathname === '/api/queue') {
           const name = url.searchParams.get('name') ?? '';

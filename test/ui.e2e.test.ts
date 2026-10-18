@@ -8,7 +8,6 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { askHuman } from '../src/services/gaps.js';
-import { pickTarget } from '../src/ui/pick.js';
 import { scaffoldTransactional } from '../src/project/templates.js';
 import { startUi } from '../src/ui/server.js';
 
@@ -159,10 +158,6 @@ test('the page loads the workflow canvas and runs it from the Run button', { ski
       await page.locator('#queue-table tbody tr').first().locator('[data-set]').click();
       await page.waitForFunction(() => /Successful: 1/.test(document.querySelector('#queue-counts')?.textContent ?? ''));
 
-      // Pick element: with no URL in the workflow it says what it needs instead of opening nothing.
-      await page.locator('.tabs button', { hasText: 'Properties' }).click();
-      await page.locator('#pick').click();
-      await page.waitForFunction(() => /give a URL/.test(document.querySelector('#props-hint')?.textContent ?? ''));
     } finally {
       await browser.close();
     }
@@ -237,30 +232,3 @@ test('the queue panel sets an item status from the UI', async () => {
   });
 });
 
-test('the pick code path turns a real click into a target, and the endpoint reports an idle picker', { skip: !available ? 'no chromium on this host' : false }, async () => {
-  await withUi(async (base) => {
-    // `rpa pick` and the Studio button share this: a real chromium, the injected script, one click.
-    const step = await pickTarget(base, {
-      headless: true,
-      timeoutMs: 15000,
-      onPage: async (page) => { await page.click('#save'); } // a scripted clicker instead of a human
-    });
-    assert.equal(step?.type, 'web');
-    assert.equal(step?.action, 'click');
-    assert.equal(step?.target.strict, '#save');
-    assert.deepEqual((step?.target.fuzzy as { tag: string; attributes: Record<string, string> }).attributes.id, 'save');
-    assert.equal((step?.target.fuzzy as { tag: string }).tag, 'BUTTON', 'fuzzy targeting comes from the same click');
-
-    // The endpoint validates its input, and a pick nobody answers times out instead of hanging.
-    const missing = await fetch(`${base}/api/pick`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-    assert.equal(missing.status, 400);
-
-    const idle = await fetch(`${base}/api/pick`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: base, headless: true, timeoutMs: 1000 })
-    });
-    assert.equal(idle.status, 408);
-    assert.match(String(((await idle.json()) as { error?: string }).error ?? ''), /nothing was picked/);
-  });
-});

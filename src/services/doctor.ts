@@ -3,8 +3,8 @@
  * tool ends up inventing):
  *
  *   - each **collector** answers one question about this machine and never modifies anything;
- *   - a **profile** selects which collectors run, so a box that only runs web flows is not asked
- *     desktop questions;
+ *   - a **profile** selects which collectors run, so a box that only dispatches desktop work is
+ *     not asked about mail or a browser;
  *   - the **report** is one JSON object; `--out report.zip` writes it as a one-entry archive, the
  *     way a support case would be filed.
  *
@@ -14,6 +14,7 @@
  */
 import { createRequire } from 'node:module';
 import { constants, existsSync } from 'node:fs';
+import { backendReport } from './desktop/backend.js';
 import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
@@ -21,7 +22,7 @@ import path from 'node:path';
 import { parseWorkflow, validateWorkflow } from '../workflow/model.js';
 import { writeArchive } from '../project/pack.js';
 
-export const DOCTOR_PROFILES = ['default', 'web', 'robot'] as const;
+export const DOCTOR_PROFILES = ['default', 'desktop', 'robot'] as const;
 export type DoctorProfile = (typeof DOCTOR_PROFILES)[number];
 
 export type CollectorStatus = 'ok' | 'warn' | 'fail';
@@ -126,7 +127,7 @@ async function collectRuntime(): Promise<CollectorResult> {
 
 /** Optional capabilities: what each module unlocks, and whether this machine has it. */
 const OPTIONAL_MODULES: Array<{ name: string; unlocks: string }> = [
-  { name: 'playwright', unlocks: 'web steps' },
+  { name: 'robotjs', unlocks: 'desktop steps (fallback backend)' },
   { name: '@nut-tree-fork/nut-js', unlocks: 'desktop steps' },
   { name: 'tesseract.js', unlocks: 'ocr steps' },
   { name: 'exceljs', unlocks: 'xlsx files' },
@@ -140,42 +141,26 @@ async function collectDependencies(): Promise<CollectorResult> {
   for (const { name, unlocks } of OPTIONAL_MODULES) {
     const probe = await probeModule(name);
     facts[name] = probe.installed ? probe.version : `not installed (${unlocks})`;
-    if (!probe.installed && name === 'playwright') {
-      notes.push('playwright is the one required dependency: npm i playwright');
+    if (!probe.installed && name === '@nut-tree-fork/nut-js') {
+      notes.push('nut.js is the default desktop backend: npm i @nut-tree-fork/nut-js (robot.js or the OS tools stand in without it)');
     }
   }
-  const playwrightMissing = (facts['playwright'] ?? '').startsWith('not installed');
-  return { name: 'dependencies', status: playwrightMissing ? 'warn' : 'ok', facts, notes };
+  const backendMissing = facts['@nut-tree-fork/nut-js'] === undefined || String(facts['@nut-tree-fork/nut-js']).startsWith('not installed');
+  if (backendMissing) notes.push('no nut.js: desktop steps fall back to robot.js or the OS tools — run: npm i @nut-tree-fork/nut-js');
+  return { name: 'dependencies', status: backendMissing ? 'warn' : 'ok', facts, notes };
 }
 
-async function collectWeb(): Promise<CollectorResult> {
-  const probe = await probeModule('playwright');
-  if (!probe.installed) {
-    return {
-      name: 'web',
-      status: 'warn',
-      facts: { playwright: 'not installed' },
-      notes: ['web steps cannot resolve until playwright is installed']
-    };
-  }
-  try {
-    const { chromium } = (await import('playwright')) as typeof import('playwright');
-    const executable = chromium.executablePath();
-    const present = executable !== '' && existsSync(executable);
-    return {
-      name: 'web',
-      status: present ? 'ok' : 'warn',
-      facts: { playwright: probe.version, chromium: present ? executable : 'not downloaded' },
-      notes: present ? [] : ['run: npx playwright install chromium']
-    };
-  } catch (e) {
-    return {
-      name: 'web',
-      status: 'warn',
-      facts: { playwright: probe.version },
-      notes: [`chromium probe failed: ${(e as Error).message}`]
-    };
-  }
+async function collectDesktop(): Promise<CollectorResult> {
+  const rows = await backendReport();
+  const live = rows.filter((row) => row.available);
+  return {
+    name: 'desktop',
+    status: live.length > 0 ? 'ok' : 'warn',
+    facts: Object.fromEntries(rows.map((row) => [row.name, row.available ? row.detail : `unavailable — ${row.detail}`])),
+    notes: live.length > 0
+      ? []
+      : ['no desktop backend answers here: install @nut-tree-fork/nut-js, or the tools one of the OS backends needs (xdotool on Linux)']
+  };
 }
 
 function collectSession(): CollectorResult {
@@ -285,7 +270,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const collectors: CollectorResult[] = [];
   collectors.push(await collectRuntime());
   collectors.push(await collectDependencies());
-  if (profile === 'web' || profile === 'robot') collectors.push(await collectWeb());
+  if (profile === 'desktop' || profile === 'robot') collectors.push(await collectDesktop());
   if (profile === 'robot') collectors.push(collectSession());
   collectors.push(collectTools());
   if (options.projectDir) collectors.push(await collectProject(path.resolve(options.projectDir)));

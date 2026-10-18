@@ -26,7 +26,8 @@ test('the default profile reports runtime, dependencies and tools as one JSON ob
   assert.equal(runtime.facts['node'], process.version);
 
   const dependencies = report.collectors[1]!;
-  assert.ok('playwright' in dependencies.facts, 'the web capability is always reported');
+  assert.ok('@nut-tree-fork/nut-js' in dependencies.facts, 'the default desktop backend is always reported');
+  assert.ok('robotjs' in dependencies.facts, 'the fallback backend is always reported');
 
   assert.equal(report.summary.warnings + report.summary.problems,
     report.collectors.filter((collector) => collector.status !== 'ok').length);
@@ -36,22 +37,22 @@ test('the default profile reports runtime, dependencies and tools as one JSON ob
   assert.equal(roundTrip.collectors.length, report.collectors.length);
 });
 
-test('profiles select collectors: web checks chromium, robot adds the session', async () => {
-  assert.deepEqual([...DOCTOR_PROFILES], ['default', 'web', 'robot']);
+test('profiles select collectors: desktop asks the backends, robot adds the session', async () => {
+  assert.deepEqual([...DOCTOR_PROFILES], ['default', 'desktop', 'robot']);
 
-  const web = await runDoctor({ profile: 'web' });
-  assert.ok(web.collectors.some((collector) => collector.name === 'web'));
-  assert.ok(!web.collectors.some((collector) => collector.name === 'session'));
+  const desktop = await runDoctor({ profile: 'desktop' });
+  assert.ok(desktop.collectors.some((collector) => collector.name === 'desktop'));
+  assert.ok(!desktop.collectors.some((collector) => collector.name === 'session'));
 
   const robot = await runDoctor({ profile: 'robot' });
-  assert.ok(robot.collectors.some((collector) => collector.name === 'web'));
+  assert.ok(robot.collectors.some((collector) => collector.name === 'desktop'));
   assert.ok(robot.collectors.some((collector) => collector.name === 'session'));
 });
 
 test('a project is validated: good workflow counted, broken one fails the collector', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'rpa-doctor-'));
   await writeFile(path.join(dir, 'Main.json'), JSON.stringify([{ type: 'control', action: 'delay', ms: 1 }]));
-  await writeFile(path.join(dir, 'Broken.json'), JSON.stringify([{ type: 'web', action: 'clik' }]));
+  await writeFile(path.join(dir, 'Broken.json'), JSON.stringify([{ type: 'desktop', action: 'clik' }]));
   await writeFile(path.join(dir, 'config.json'), JSON.stringify({ name: 'not a workflow' }));
 
   const report = await runDoctor({ projectDir: dir });

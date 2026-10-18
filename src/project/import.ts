@@ -342,21 +342,42 @@ function attribute(node: XmlNode, ...names: string[]): string | undefined {
   return undefined;
 }
 
-/** A selector, from an attribute or a `<Click.Target>` property element holding a target object. */
-function selectorOf(node: XmlNode): Record<string, unknown> | undefined {
+/** The recorded chain on an activity, whatever attribute carried it. */
+function chainOf(node: XmlNode): string | undefined {
   const target = node.children.find((child) => child.name.endsWith('.Target'));
   const anchorable = target ? findDeep(target, ['TargetAnchorable', 'Target']) : undefined;
-  const chain = attribute(node, 'Selector', 'FullSelectorArgument', 'StrictSelector')
+  const raw = attribute(node, 'Selector', 'FullSelectorArgument', 'StrictSelector')
     ?? anchorable?.attributes['FullSelectorArgument']
     ?? anchorable?.attributes['Selector']
-    ?? anchorable?.attributes['StrictSelector'];
-  const fuzzy = attribute(node, 'FuzzySelectorArgument') ?? anchorable?.attributes['FuzzySelectorArgument'];
-  for (const candidate of [fuzzy, chain]) {
-    if (!candidate) continue;
-    const parsed = parseSelectorChain(decodeXml(candidate));
-    if (parsed) return parsed as Record<string, unknown>;
-  }
-  return chain ? { strict: decodeXml(chain) } : undefined;
+    ?? anchorable?.attributes['StrictSelector']
+    ?? attribute(node, 'FuzzySelectorArgument')
+    ?? anchorable?.attributes['FuzzySelectorArgument'];
+  return raw ? decodeXml(raw) : undefined;
+}
+
+/**
+ * What a `desktop.uia` step needs to find the element a recorded chain describes: the properties
+ * the accessibility API knows it by (name, automation id, control type), plus the raw chain kept
+ * on the step's target so nothing the record captured is thrown away.
+ */
+function elementFields(node: XmlNode): Record<string, unknown> {
+  const chain = chainOf(node);
+  if (!chain) return {};
+  const fields: Record<string, unknown> = { target: { selectorChain: chain } };
+  const spec = parseSelectorChain(chain);
+  if (!spec?.uia) return fields;
+  if (spec.uia.name) fields.name = spec.uia.name;
+  if (spec.uia.automationId) fields.automationId = spec.uia.automationId;
+  if (spec.uia.controlType) fields.controlType = spec.uia.controlType;
+  return fields;
+}
+
+/** A selector, from an attribute or a `<Click.Target>` property element holding a target object. */
+function selectorOf(node: XmlNode): Record<string, unknown> | undefined {
+  const chain = chainOf(node);
+  if (!chain) return undefined;
+  const parsed = parseSelectorChain(chain);
+  return parsed ? (parsed as Record<string, unknown>) : { strict: chain };
 }
 
 /** TimeSpan / `hh:mm:ss` / `[TimeSpan.FromSeconds(n)]` → milliseconds. */
@@ -561,7 +582,7 @@ function convertActivity(node: XmlNode, context: Context): Step[] | null {
       return [{ type: 'hitl', action: 'ask', prompt, ...(saveAs ? { saveAs } : {}) } as Step];
     }
 
-    // ── the application scope + web steps ────────────────────────────────────────────────────
+    // ── the application scope + element steps ───────────────────────────────────────────────
     case 'NApplicationCard':
     case 'ApplicationCard':
     case 'UseApplicationBrowser':
@@ -573,9 +594,12 @@ function convertActivity(node: XmlNode, context: Context): Step[] | null {
       const title = attribute(node, 'WindowTitle', 'Title') ?? findDeep(node, ['TargetApp'])?.attributes['Title'];
       if (url) {
         const translated = text(url);
-        if (translated) steps.push({ type: 'web', action: 'goto', url: translated } as Step);
+        if (translated) {
+          report.notes.push(`line ${line}: the scope opens a browser at ${translated} — this toolkit drives the desktop only, so the page is not opened; the steps inside run against whatever window has focus.`);
+          steps.push({ type: 'control', action: 'log', message: `browser scope (not opened): ${translated}` } as Step);
+        }
       } else if (title) {
-        report.notes.push(`line ${line}: the application scope opens a window ("${title}") — this engine drives a browser page, so the window is not opened; the steps inside target the page.`);
+        report.notes.push(`line ${line}: the application scope opens a window ("${title}") — no window is opened; a targeted step finds it by its properties instead.`);
         steps.push({ type: 'control', action: 'log', message: `application scope: ${title}` } as Step);
       }
       steps.push(...convertChildren(bodySteps(property(node, 'Body') ?? node), context));
@@ -584,27 +608,24 @@ function convertActivity(node: XmlNode, context: Context): Step[] | null {
     case 'Click':
     case 'NClick': {
       mapped();
-      const target = selectorOf(node);
-      if (!target) return fail('the click has no selector');
-      return [{ type: 'web', action: 'click', target } as Step];
+      if (!chainOf(node)) return fail('the click has no element to find');
+      return [{ type: 'desktop', action: 'uia', uiaAction: 'invoke', ...elementFields(node) } as Step];
     }
     case 'TypeInto':
     case 'NTypeInto': {
       mapped();
-      const target = selectorOf(node);
       const value = toText(expressionOf(attribute(node, 'Text')) ?? '', report, line, name);
-      if (!target) return fail('the type step has no selector');
+      if (!chainOf(node)) return fail('the type step has no element to find');
       if (value === null) return []; // toText reported the expression
-      return [{ type: 'web', action: 'type', target, text: value } as Step];
+      return [{ type: 'desktop', action: 'uia', uiaAction: 'setValue', value, ...elementFields(node) } as Step];
     }
     case 'GetText':
     case 'NGetText': {
       mapped();
-      const target = selectorOf(node);
       const saveAs = bare(reference(expressionOf(attribute(node, 'Result', 'Text', 'Output')) ?? ''));
-      if (!target) return fail('the read has no selector');
+      if (!chainOf(node)) return fail('the read has no element to find');
       if (!saveAs) return fail('the result variable was not translated');
-      return [{ type: 'web', action: 'getText', target, saveAs } as Step];
+      return [{ type: 'desktop', action: 'uia', uiaAction: 'getText', saveAs, ...elementFields(node) } as Step];
     }
 
     // ── the queue ────────────────────────────────────────────────────────────────────────────

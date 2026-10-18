@@ -31,14 +31,6 @@ const BODIES = {
 
 function blankStep(type, action) {
   const defaults = {
-    'web:goto': { url: 'https://' },
-    'web:click': { selector: '' },
-    'web:type': { selector: '', text: '' },
-    'web:getText': { selector: '', saveAs: '' },
-    'web:assertText': { text: '' },
-    'web:waitForElement': { selector: '' },
-    'web:elementExists': { selector: '', saveAs: '' },
-    'web:screenshot': {},
     'control:log': { message: '' },
     'control:setVar': { name: '', value: '' },
     'control:math': { name: '', op: 'add', value: '1' },
@@ -165,7 +157,7 @@ function renderSteps() {
   const { steps } = currentContext();
   const host = $('steps');
   host.innerHTML = '';
-  document.body.dataset.type = steps[0]?.type ?? 'web';
+  document.body.dataset.type = steps[0]?.type ?? 'desktop';
 
   steps.forEach((step, index) => {
     const card = document.createElement('div');
@@ -572,40 +564,6 @@ async function loadHitl() {
   }
 }
 
-/* ── Pick element: the same code path as `rpa pick`, landing the step on the canvas ───────────── */
-
-async function pickElement() {
-  const url = $('pick-url').value.trim() || firstGotoUrl();
-  if (!url) {
-    $('props-hint').textContent = 'give a URL to open first (the workflow has no web.goto to reuse)';
-    return;
-  }
-  $('pick-url').value = url;
-  $('props-hint').textContent = `a browser is opening ${url} — click the element you want (2 minutes)`;
-  try {
-    const { step } = await api('/api/pick', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, timeoutMs: 120000 })
-    });
-    const { steps } = currentContext();
-    steps.push(step);
-    state.selected = steps.length - 1;
-    render();
-    switchTab('props');
-    $('props-hint').textContent = 'picked — the new step is selected below';
-  } catch (error) {
-    $('props-hint').textContent = String(error.message);
-  }
-}
-
-function firstGotoUrl() {
-  for (const step of state.workflow.steps ?? []) {
-    if (step.type === 'web' && step.action === 'goto' && step.url) return String(step.url);
-  }
-  return '';
-}
-
 function switchTab(name) {
   for (const button of document.querySelectorAll('.tabs button')) button.classList.toggle('active', button.dataset.tab === name);
   for (const panel of document.querySelectorAll('.tab-panel')) panel.classList.add('hidden');
@@ -623,7 +581,6 @@ function switchTab(name) {
 for (const button of document.querySelectorAll('.tabs button')) button.onclick = () => switchTab(button.dataset.tab);
 $('run').onclick = () => void run();
 $('save').onclick = () => void save();
-$('pick').onclick = () => void pickElement();
 $('hitl-refresh').onclick = () => void loadHitl();
 $('palette-filter').oninput = renderPalette;
 $('clear-console').onclick = () => { $('console').textContent = ''; };

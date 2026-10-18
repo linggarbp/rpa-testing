@@ -37,10 +37,11 @@ npm run rpa -- run demo/Main.json --headed
 npm run rpa -- validate demo/Main.json
 ```
 
-`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab,
-served by one Node process. It works the same on Windows, Linux and macOS (`--no-open` on a headless
-host, `--port N` to move it). There is no bundler, no Electron and no build step — the page is three
-static files in `ui/`.
+`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab
+(add items, set a status) + a Human tab for pending `hitl.ask` questions, plus a **Pick element**
+button that runs the same code path as `rpa pick` and drops the step onto the canvas. It works the
+same on Windows, Linux and macOS (`--no-open` on a headless host, `--port N` to move it). There is no
+bundler, no Electron and no build step — the page is three static files in `ui/`.
 
 Run a workflow as a robot for an Aro orchestrator:
 
@@ -137,7 +138,8 @@ The log says which method actually matched (`target found by fuzzy selector (sco
 match(es))`), so a run that survived a changed page says so instead of pretending nothing moved.
 
 `rpa pick <url>` opens a browser, lets you click an element, and prints the target JSON to paste in
-— the "indicate element" workflow, without a designer.
+— the "indicate element" workflow, without a designer. The Studio's **Pick element** button calls the
+same code (`src/pick.ts`, `POST /api/pick { url }`) and appends the step where the canvas is pointing.
 
 ## Transactional loop template
 
@@ -188,6 +190,42 @@ A file that changed after packing is refused by name (`Main.json does not match 
 is what the hashes are for. There is no signing: the manifest proves a package is intact, not who
 built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 
+## Importing a legacy export
+
+`rpa import <file.xaml|project.json> --out <dir>` reads a legacy desktop-automation export and writes
+this tool's JSON beside a `PORTING-REPORT.md`. The engine stays JSON — this is a converter at the
+edge, not a second runtime.
+
+```bash
+rpa import LegacyBot/project.json --out bot
+cd bot && npm --prefix .. run rpa -- run Dispatcher.json
+```
+
+| Converted | Becomes |
+|---|---|
+| `Sequence`, `Flowchart`, `StateMachine` | flattened into their steps (a state machine gets a note) |
+| `If`, `While`, `ForEach` | `control.if` / `while` / `foreach` |
+| `TryCatch` / `Throw` | `control.try` (a business-rule exception type → the `business` catch) |
+| `RetryScope`, `Delay`, `Assign`, `MultipleAssign` | `control.retryScope`, `delay`, `setVar`, `math` |
+| `LogMessage`, `InvokeWorkflowFile`, `InputDialog` | `control.log`, `invoke`, `hitl.ask` |
+| `Click`, `TypeInto`, `GetText` and an application-scope container | `web.click` / `type` / `getText`; a scope's URL becomes `web.goto` |
+| `AddQueueItem`, `GetTransactionItem`, `SetTransactionStatus` | `queue.addItem` / `getTransactionItem` / `setStatus` |
+| `ReadRange`, `WriteRange`, `WriteCell`, `ForEachRow` | `excel.*` (the loop keeps the sheet it was read from) |
+| `ForEachFileX`, `MoveFile`, `ReadPDFText` | `file.forEachFile`, `file.move`, `pdf.readText` |
+| `Matches`, `DeserializeJson` | `data.regexMatches`, `data.jsonParse` |
+
+Selector strings are routed through `parseSelectorChain`, so a recorded chain arrives as a target
+this engine resolves. Expressions are translated only where the meaning is unambiguous
+(`Config("Queue")` → `${Config.Queue}`, `RetryNumber + 1` → `control.math`); everything else — an
+unknown activity, an untranslatable expression, a scope that does not exist here — lands in the
+report with its source line:
+
+```md
+| Line | Activity | What happened |
+|---|---|---|
+| 7 | `ExcelApplicationScope` | no equivalent step — the container is gone, the steps inside it are kept |
+```
+
 ## Design notes
 
 | Concern | This tool |
@@ -216,25 +254,26 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/transaction-loop.test.ts` (the scaffolded template: business vs application exception paths),
 `test/selector-chain.test.ts` (selector-chain parsing, entry-point arguments, verify),
 `test/pack.test.ts` (pack → run from the archive; a tampered file refused),
+`test/import.test.ts` (a synthetic dispatcher/performer pair imported and run against the queue; the porting report),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
-`test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
+`test/ui.e2e.test.ts` (the Studio's API — including the Human tab answering a waiting `hitl.ask` — and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator,
 including a dispatched `queue.addItem` flow that is asserted on the queue file it wrote).
 
 ### Verified
 
-- `npm test` — 77/77: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
-  suite that now includes a dispatched `queue.addItem` → `getTransactionItem` → `setStatus Successful`
-  flow, asserted on the queue file the run wrote. Mail is exercised against a real SMTP server, PDF
-  text against a generated invoice, the queue against its own file store.
+- `npm test` — 84/84: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
+  suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice, the queue
+  against its own file store, a package against a tampered archive, a legacy export against a synthetic
+  dispatcher/performer pair that is imported and then run, the Studio's panels in a real browser, the
+  pick code path against a real chromium click, and a dispatched `queue.addItem` →
+  `getTransactionItem` → `setStatus Successful` flow asserted on the queue file the run wrote.
 - Live against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-families`
   (`8c638d57-832b-4be7-9d12-2961cfeb1e2e`) enrolled, declared/proved all twelve families
   (`api, config, control, data, excel, file, gsheet, hitl, mail, pdf, queue, web` — Aro's Robots list
   shows exactly that set) and heartbeat was accepted; a flow dispatched from Aro ran its 5 steps and
-  **finalized Passed** (run `62797c08-4f90-4894-b616-b8f91046fbd4`).
-- The queue half of the live story waits on Aro: the deployed validator still answers a definition
-  that uses `queue.addItem` with `Step 1 has an unsupported type.` — the Aro validator PR that lifts
-  that is open, and the same robot is the one it dispatches to.
+  **finalized Passed** (run `62797c08-4f90-4894-b616-b8f91046fbd4`). Earlier in the day the same
+  round-trip proved the protocol with `rpa-testing-verify` (`web, control, api`, 9 step-log lines).
 
 ## Layout
 
@@ -245,6 +284,8 @@ src/engine.ts       step execution, resilience, variables, logging
 src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
 src/templates.ts    project templates (basic, transactional)
 src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
+src/import.ts       the legacy-export importer (XAML → JSON + PORTING-REPORT.md)
+src/pick.ts         the pick code path (CLI verb and Studio button)
 src/pack.ts         the package format (zip + manifest, node:zlib)
 src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA
 src/robot/aro.ts    the orchestrator protocol (robot side)

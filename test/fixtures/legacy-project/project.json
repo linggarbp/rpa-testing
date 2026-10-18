@@ -1,0 +1,9 @@
+{
+  "name": "LegacyInvoiceBot",
+  "projectVersion": "1.0.0",
+  "description": "Synthetic dispatcher/performer pair used by the importer tests.",
+  "workflows": [
+    { "filePath": "Dispatcher.xaml", "name": "Dispatcher" },
+    { "filePath": "Performer.xaml", "name": "Performer" }
+  ]
+}

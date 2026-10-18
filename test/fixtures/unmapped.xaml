@@ -1,0 +1,23 @@
+<Activity x:Class="PartialPort"
+          xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+          xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+          xmlns:a="clr-namespace:Automation.Activities;assembly=Automation.Activities">
+  <Sequence DisplayName="Half of this has no equivalent">
+    <a:LogMessage DisplayName="Start" Text="Starting the port." Level="Info" />
+    <a:ExcelApplicationScope DisplayName="Open the workbook" WorkbookPath="Data\Orders.xlsx">
+      <a:ExcelApplicationScope.Body>
+        <ActivityAction>
+          <Sequence>
+            <a:WriteCell DisplayName="Write a cell" WorkbookPath="Data\Orders.xlsx" Cell="A1" Text="value" />
+          </Sequence>
+        </ActivityAction>
+      </a:ExcelApplicationScope.Body>
+    </a:ExcelApplicationScope>
+    <a:InvokeCode DisplayName="Some hand-written code" Language="VisualBasic">
+      <a:InvokeCode.Code>
+        <VisualBasicValue>Dim total As Integer = 0</VisualBasicValue>
+      </a:InvokeCode.Code>
+    </a:InvokeCode>
+    <a:LogMessage DisplayName="Done" Text="Finished." Level="Info" />
+  </Sequence>
+</Activity>

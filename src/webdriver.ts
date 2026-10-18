@@ -3,11 +3,29 @@
  * dependency. The same client talks to Appium (mobile), Selenium or chromedriver, because they all
  * speak this protocol; only the subset the `mobile.*` steps use is implemented, and responses are
  * read in their W3C shapes (Appium 2 answers exactly these).
+ *
+ * `MobileDriver` is the seam: this raw client is the default, and `src/webdriverio-driver.ts`
+ * implements the same interface on top of WebdriverIO for teams already on that stack.
  */
 export interface WebDriverStartOptions {
   server: string;
   capabilities: Record<string, unknown>;
   timeoutMs?: number;
+}
+
+/** Everything the mobile steps do to a device, driver-agnostic. */
+export interface MobileDriver {
+  readonly id: string | undefined;
+  end(): Promise<void>;
+  find(using: string, value: string): Promise<string>;
+  click(elementId: string): Promise<void>;
+  clear(elementId: string): Promise<void>;
+  type(elementId: string, text: string): Promise<void>;
+  text(elementId: string): Promise<string>;
+  displayed(elementId: string): Promise<boolean>;
+  screenshot(): Promise<string>;
+  actions(actions: unknown[]): Promise<void>;
+  windowRect(): Promise<{ width: number; height: number }>;
 }
 
 /** The W3C element key — Appium and Selenium both put the element id here. */
@@ -30,7 +48,7 @@ export function normalizeCapabilities(capabilities: Record<string, unknown>): Re
   return normalized;
 }
 
-export class WebDriverClient {
+export class WebDriverClient implements MobileDriver {
   private sessionId: string | undefined;
 
   constructor(private readonly server: string, private readonly timeoutMs = 60000) {}

@@ -57,6 +57,9 @@ dispatchable from there.
 
 ## Platforms
 
+Runtime floor: **Node ≥ 22.19** (`engines`), and the stack tracks latest stable — Playwright 1.64,
+TypeScript 7, WebdriverIO 10 (optional, mobile `driver: "webdriverio"`).
+
 Everything the engine does is cross-platform Node; the differences are the ones the OS imposes:
 
 | | Windows | Linux | macOS |
@@ -91,9 +94,9 @@ pdf        readText                                               (native text v
 gsheet     append read                                            (Google Sheets v4 REST)
 hitl       ask                                                    (file-based prompt; `rpa hitl answer`)
 api        request load
-mobile     session end tap type getText waitFor swipe screenshot    (raw W3C WebDriver — Appium and
-                                                                    Selenium answer it; none of this
-                                                                    needs a client library)
+mobile     session end tap type getText waitFor swipe screenshot    (WebDriver — driver: raw (W3C,
+                                                                    default, zero-dep) | webdriverio;
+                                                                    Appium & Selenium answer both)
 word       readText writeText                                      (.docx over the stdlib zip + XML)
 desktop    move click doubleClick rightClick type scroll pressKey drag clipboardCopy
            screenshot waitForImage clickImage uia                 (uia = PowerShell UI Automation, Windows)
@@ -318,8 +321,8 @@ retry/final-attempt rule, checks that must not heal),
 session recorded and replayed by a fresh engine),
 `test/api-load.test.ts` (VUs × iterations honoured against a counting server; percentiles from real
 latencies; failures measured, not thrown),
-`test/mobile.test.ts` (the raw WebDriver client against a mock Appium endpoint: capabilities W3C
-shaping, find/click/value/text, touch-actions swipe, session closes with the run, even on failure),
+`test/mobile.test.ts` (both drivers — raw W3C and WebdriverIO — against a mock Appium endpoint:
+capabilities shaping, find/click/value/text, touch-actions swipe, session closes with the run),
 `test/word.test.ts` (write → read round-trip; a foreign docx reads; LibreOffice opens what we wrote),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API — including the Human tab answering a waiting `hitl.ask` — and the page driven in a real browser),
@@ -328,14 +331,19 @@ including a dispatched `queue.addItem` flow that is asserted on the queue file i
 
 ### Verified
 
-- `npm test` — 119/119, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
+- `npm test` — 120/120, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
   protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
   the queue against its own file store, a package against a tampered archive, a legacy export against
   a synthetic dispatcher/performer pair that is imported and then run, the Studio's panels in a real
   browser, the pick code path against a real chromium click, healing against a page whose element id
   changed for real, recording against a page driven like a user then replayed by a fresh engine,
-  `api.load` against a server that counts its own requests, `mobile.*` against a mock Appium endpoint
-  that answers the real W3C shapes, and `word.*` round-tripped and re-opened by LibreOffice.
+  `api.load` against a server that counts its own requests, `mobile.*` (both drivers) against a mock
+  Appium endpoint that answers the real W3C shapes, and `word.*` round-tripped and re-opened by
+  LibreOffice.
+- Stack refresh (2026-10-18): runtime floor **Node ≥ 22.19**; Playwright 1.64.1, TypeScript 7.0.2,
+  tsx 4.23.15, @types/node 24.19, WebdriverIO 10.0.2 (optional dependency). Mobile ships two drivers
+  behind one step set — raw W3C by default (zero-dep) and `driver: "webdriverio"` (the appium-testing
+  stack) — both verified against the same mock endpoint on the same wire protocol.
 - CLI walk-through (2026-10-18): a workflow targeting the stale `#save-v2` ran `--heal auto` —
   `[warn] target healed … resemblance: id 'save-v2' ≈ 'save-v3' (score 0.86)` — and **Passed** in
   952 ms with 1 heal recorded in `--report`; `--heal off` on the same file failed plainly.

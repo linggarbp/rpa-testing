@@ -19,7 +19,8 @@ import {
 } from './store.js';
 import { appendSheet, askHuman, readPdfText, readSheet, receiveMail, runUia, sendMail } from './gaps.js';
 import { describeTarget, healTarget, resolveTarget, targetFromStep } from './targeting.js';
-import { WebDriverClient } from './webdriver.js';
+import { WebDriverClient, type MobileDriver } from './webdriver.js';
+import { startWebdriverIo } from './webdriverio-driver.js';
 import { buildDocx, readDocx } from './word.js';
 
 /** An exception a workflow raised on purpose — business vs application classification. */
@@ -125,8 +126,8 @@ export class Engine {
   private readonly queues: QueueStore;
   private browser: Browser | undefined;
   private page: Page | undefined;
-  /** The open mobile session (raw WebDriver), closed with the run like the browser is. */
-  private webdriver: WebDriverClient | undefined;
+  /** The open mobile session, closed with the run like the browser is. */
+  private webdriver: MobileDriver | undefined;
   private deadline = 0;
   private stepsRun = 0;
   private runDirCreated = false;
@@ -1283,14 +1284,17 @@ export class Engine {
       case 'session': {
         const server = this.interp(String(step.server ?? '')) || 'http://127.0.0.1:4723';
         const capabilities = (step.capabilities ?? {}) as Record<string, unknown>;
-        const client = await WebDriverClient.start({
-          server,
-          capabilities,
-          timeoutMs: this.duration(step.timeoutMs, 60000, 600000)
-        });
+        const driver = String(step.driver ?? 'raw');
+        const client = driver === 'webdriverio'
+          ? await startWebdriverIo({ server, capabilities })
+          : await WebDriverClient.start({
+            server,
+            capabilities,
+            timeoutMs: this.duration(step.timeoutMs, 60000, 600000)
+          });
         this.webdriver = client;
         if (step.saveAs) this.vars[String(step.saveAs)] = client.id ?? '';
-        await this.log('info', `mobile.session ${server} → ${client.id} (${String(capabilities['platformName'] ?? '?')})`);
+        await this.log('info', `mobile.session ${server} via ${driver} → ${client.id} (${String(capabilities['platformName'] ?? '?')})`);
         break;
       }
       case 'end': {
@@ -1399,7 +1403,7 @@ export class Engine {
     }
   }
 
-  private mobileSession(): WebDriverClient {
+  private mobileSession(): MobileDriver {
     if (!this.webdriver) throw new Error('mobile: no session is open — add a mobile.session step first.');
     return this.webdriver;
   }

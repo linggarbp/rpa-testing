@@ -1,20 +1,22 @@
 /**
- * Selector-chain interoperability: reading the `<html …/><webctrl …/>` form that desktop recorders emit.
+ * Selector-chain interoperability: reading the `<wnd …/><ctrl …/>` form that desktop recorders emit.
  *
  * Two things live here:
  *
- *  `parseSelectorChain` takes a chain like
- *     `<html app='chrome.exe' /><webctrl id='submit' tag='BUTTON' aaname='Sign in' />`
- *     and returns a `TargetSpec`, so a selector copied from a recorded session works here
- *     instead of being re-derived by hand.
+ *  `parseSelectorNodes` takes a chain like
+ *     `<wnd app='notepad.exe' title='Untitled - Notepad' /><ctrl name='Text editor' role='document' />`
+ *     and returns its nodes, so a selector copied from a recorded session works here instead of
+ *     being re-derived by hand.
  *  The grammar is a chain of nodes, each a tag plus `name='value'` attributes; `matching:<attr>` and
  *  `fuzzylevel:<attr>` mark attributes that must be matched approximately rather than exactly.
  *
- * Node kinds seen in practice: `html`/`wnd` describe the application window (kept as `scope`),
- * `webctrl`/`ctrl`/`java`/`sap` describe the element (`tag`, `id`, `name`, `class`, `aaname`,
- * `idx`).
+ * Node kinds seen in practice: `wnd`/`html` describe the application window (kept as `scope`),
+ * `ctrl`/`webctrl`/`java`/`sap` describe the element. The attributes are mapped onto the properties
+ * the accessibility API matches on, which is what makes a recorded chain usable as a target: an
+ * `id`/`automationId` is the stable identifier, `aaname`/`name` the accessible name, `class` the
+ * window class, and a `role`/`tag` naming a control type becomes that control type.
  */
-import type { FuzzySpec, TargetSpec } from './model.js';
+import type { FuzzySpec, TargetSpec, UiaSpec } from './model.js';
 
 interface SelectorNode {
   tag: string;
@@ -56,41 +58,54 @@ export function parseSelectorNodes(raw: string): SelectorNode[] {
   return nodes;
 }
 
-/** A CSS/Playwright selector for one element node, or undefined when the node is only a scope. */
-function cssForNode(node: SelectorNode): string | undefined {
-  if (node.tag === 'html') return undefined; // the window scope, not an element
-  const isWeb = node.tag === 'webctrl' || node.tag === 'web';
-  const tag = (node.attributes['tag'] ?? (isWeb ? '*' : node.tag)).toLowerCase();
-  const id = node.attributes['id'];
-  if (id) return `#${id.replace(/([^\w-])/g, '\\$1')}`;
+/** Control types as the Windows accessibility API names them, for the tags recorders emit. */
+const CONTROL_TYPES: Record<string, string> = {
+  button: 'Button', input: 'Edit', edit: 'Edit', text: 'Text', textbox: 'Edit', document: 'Document',
+  link: 'Hyperlink', hyperlink: 'Hyperlink', checkbox: 'CheckBox', radio: 'RadioButton', combobox: 'ComboBox',
+  select: 'ComboBox', list: 'List', listitem: 'ListItem', tab: 'TabItem', menu: 'Menu', menuitem: 'MenuItem',
+  tree: 'Tree', treeitem: 'TreeItem', table: 'Table', cell: 'DataItem', image: 'Image', img: 'Image',
+  pane: 'Pane', window: 'Window', toolbar: 'ToolBar', group: 'Group', statusbar: 'StatusBar'
+};
 
-  const parts: string[] = [];
-  for (const name of ['name', 'type', 'role', 'placeholder']) {
-    const value = node.attributes[name];
-    if (value) parts.push(`[${name}="${value.replace(/"/g, '\\"')}"]`);
-  }
-  const classes = (node.attributes['class'] ?? '').split(/\s+/).filter(Boolean);
-  if (classes.length > 0) parts.push(...classes.map((token) => `.${token.replace(/([^\w-])/g, '\\$1')}`));
+/** One property a chain names the element by, and the attribute it was read from. */
+interface ElementProperty {
+  property: keyof UiaSpec;
+  value: string;
+  from: string;
+}
 
-  // Playwright's CSS engine understands :has-text, which is the closest cheap equivalent of
-  // `aaname` (accessible name) when no id/name is present.
-  const aaname = node.attributes['aaname'] || node.attributes['innertext'];
-  let selector = `${tag}${parts.join('')}`;
-  if (aaname) selector += `:has-text("${aaname.replace(/"/g, '\\"')}")`;
-  else if (parts.length === 0 && node.tag !== 'webctrl' && tag === '*') return undefined;
-  return selector;
+/** The properties a chain's element node carries, most reliable first, one per property. */
+function propertiesForNode(node: SelectorNode): ElementProperty[] {
+  const found: ElementProperty[] = [];
+  const push = (property: keyof UiaSpec, attribute: string): void => {
+    const value = node.attributes[attribute] ?? '';
+    if (value === '' || found.some((entry) => entry.property === property)) return;
+    found.push({ property, value, from: attribute });
+  };
+  push('automationId', 'automationId');
+  push('automationId', 'id');
+  push('name', 'aaname');
+  push('name', 'name');
+  push('name', 'innertext');
+  push('className', 'class');
+  push('className', 'cls');
+  const tagOrRole = (node.attributes['role'] ?? node.attributes['tag'] ?? node.tag).toLowerCase();
+  const controlType = CONTROL_TYPES[tagOrRole];
+  if (controlType) found.push({ property: 'controlType', value: controlType, from: tagOrRole });
+  return found;
 }
 
 /**
- * Turn a selector chain into a TargetSpec. Returns null when the string is not a chain
- * (so callers can keep treating it as a plain Playwright selector).
+ * Turn a selector chain into a TargetSpec. Returns null when the string is not a chain, or a chain
+ * that names no element this toolkit could find.
  *
  * - A node with `matching:*` / `fuzzylevel:*` attributes becomes the fuzzy spec. A chain's
  *   `fuzzylevel` (0 = exact, higher = more lenient) maps to our minimum similarity as `1 - level`.
- * - Without those attributes the last element node becomes a strict CSS selector.
+ * - Without those attributes the element node becomes the strict property map.
  * - `idx` (1-based) is carried through; `idx='1'` is the default and therefore dropped.
- * - Attributes of the `<html>`/`wnd` node describe the application window; they are kept as `scope`
- *   (logged, not matched) because this engine targets one page at a time.
+ * - The `<wnd>`/`<html>` node describes the application window; it is kept as `scope` (logged, and
+ *   matched against the window title where the host can enumerate windows).
+ * - The chain itself rides along as `selectorChain`, so a report shows what was recorded.
  */
 export function parseSelectorChain(raw: string): TargetSpec | null {
   const trimmed = raw.trim();
@@ -111,35 +126,36 @@ export function parseSelectorChain(raw: string): TargetSpec | null {
 
   const idxRaw = Number(last.attributes['idx'] ?? '1');
   const idx = Number.isFinite(idxRaw) && idxRaw > 1 ? idxRaw : undefined;
-  const base: TargetSpec = {};
+  const base: TargetSpec = { selectorChain: trimmed };
   if (idx) base.idx = idx;
   if (Object.keys(scope).length > 0) base.scope = scope;
 
+  const properties = propertiesForNode(last);
+  if (properties.length === 0) return null;
+
   const fuzzyKeys = [...Object.keys(last.matching), ...Object.keys(last.fuzzylevel)];
   if (fuzzyKeys.length > 0) {
-    const attributes: Record<string, string> = {};
-    for (const [name, value] of Object.entries(last.attributes)) {
-      if (name === 'tag' || name === 'idx' || value === '') continue;
-      attributes[name] = value;
+    const values: Record<string, string> = {};
+    const levels: NonNullable<FuzzySpec['levels']> = {};
+    for (const entry of properties) {
+      values[entry.property] = entry.value;
+      const fuzz = last.fuzzylevel[entry.from];
+      const matching = last.matching[entry.from];
+      if (fuzz !== undefined) levels[entry.property] = Math.max(0, 1 - fuzz); // fuzzylevel 0 → exact (1.0)
+      else if (matching === 'exact') levels[entry.property] = 'exact';
+      else if (matching === 'fuzzy') levels[entry.property] = 'fuzzy';
     }
-    const levels: FuzzySpec['levels'] = {};
-    for (const name of Object.keys(attributes)) {
-      const matching = last.matching[name];
-      const fuzz = last.fuzzylevel[name];
-      if (fuzz !== undefined) levels[name] = Math.max(0, 1 - fuzz); // fuzzylevel 0 → exact (1.0)
-      else if (matching === 'exact') levels[name] = 'exact';
-      else if (matching === 'fuzzy') levels[name] = 'fuzzy';
-    }
+    const controlType = properties.find((entry) => entry.property === 'controlType')?.value;
     const fuzzy: FuzzySpec = {
-      tag: (last.attributes['tag'] ?? last.tag).toUpperCase(),
-      attributes,
+      properties: values,
+      ...(controlType ? { controlType } : {}),
       ...(Object.keys(levels).length > 0 ? { levels } : {}),
       threshold: 0.7
     };
     return { ...base, fuzzy };
   }
 
-  const strict = cssForNode(last);
-  if (!strict) return null;
-  return { ...base, strict };
+  const uia: UiaSpec = {};
+  for (const entry of properties) uia[entry.property] = entry.value;
+  return { ...base, uia };
 }

@@ -16,6 +16,7 @@
  * key on every enrolment, so nothing long-lived sits on the machine.
  */
 import { spawnSync } from 'node:child_process';
+import { backendReport } from '../services/desktop/backend.js';
 import { Engine, formatLogLine, type LogLine } from '../engine/engine.js';
 import { parseWorkflow, type Step } from '../workflow/model.js';
 
@@ -81,7 +82,7 @@ function hasBinary(command: string): boolean {
  * on: `declared` is a request, `proved` is what loaded here.
  */
 export const ENGINE_CAPABILITIES = [
-  'web', 'control', 'api', 'queue', 'excel', 'file', 'data', 'config', 'mail', 'pdf', 'gsheet', 'hitl'
+  'desktop', 'control', 'api', 'queue', 'excel', 'file', 'data', 'config', 'mail', 'pdf', 'gsheet', 'hitl'
 ] as const;
 
 /** Families the engine runs with nothing installed — proved by existing, not by loading a module. */
@@ -121,8 +122,7 @@ export class AroRobot {
         return false;
       }
     };
-    if (declared.includes('web') && (await loadable('playwright'))) proved.push('web');
-    if (declared.includes('desktop') && (await loadable('@nut-tree-fork/nut-js'))) proved.push('desktop');
+    if (declared.includes('desktop') && (await backendReport()).some((row) => row.available)) proved.push('desktop');
     if (declared.includes('ocr') && (await loadable('tesseract.js'))) proved.push('ocr');
     if (declared.includes('mail')
       && ((await loadable('nodemailer')) || (await loadable('imapflow')))) proved.push('mail');

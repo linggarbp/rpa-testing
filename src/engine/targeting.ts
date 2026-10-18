@@ -1,27 +1,29 @@
 /**
- * Targeting — how a step finds its element. Four methods, in order of confidence:
+ * Targeting — how a desktop step finds its thing. Four methods, in order of confidence:
  *
- *   1. `strict` / `strictAny` — exact selectors, first match wins, `idx` picks the nth.
- *   2. `fuzzy`              — tag + attribute values, scored by similarity against a threshold.
- *   3. `anchor`             — a second element whose geometric relation disambiguates the target.
- *   4. (image/OCR targeting lives in the ocr/ai-vision steps — this module stays DOM-level.)
+ *   1. `uia`    — accessibility properties (Windows UI Automation): every listed one must match.
+ *   2. `fuzzy`  — the same properties, scored by similarity against a threshold.
+ *   3. `image`  — a template the backend finds on screen.
+ *   4. `anchor` — a second element whose geometric relation disambiguates the target.
  *
- * The point of having all of them is resilience: a page that changes an id
- * breaks a strict selector, and a fuzzy selector plus an anchor keeps the workflow running — while
- * the log still says which method actually matched, so nobody has to guess later.
+ * `point` covers the trivial case: the workflow already knows where the thing is.
+ *
+ * The point of having all of them is resilience — an application that renames a control breaks a
+ * property map, and a fuzzy match plus an anchor keeps the workflow running — while the log still
+ * says which method actually matched, so nobody has to guess later.
+ *
+ * Property candidates come from the accessibility API where the host has one (Windows) and from
+ * image search everywhere else; `resolveTarget` says which of the two answered.
  */
-import type { Locator, Page } from 'playwright';
-import type { AnchorSpec, FuzzySpec, Step, TargetSpec } from '../workflow/model.js';
+import type { AnchorSpec, FuzzySpec, Step, TargetSpec, UiaSpec } from '../workflow/model.js';
 import { parseSelectorChain } from '../workflow/selector-chain.js';
+import type { DesktopBackend, ScreenBox } from '../services/desktop/backend.js';
+import { dumpUiaElements } from '../services/gaps.js';
 
-export interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+/** A rectangle on the screen, in screen coordinates. */
+export type Box = ScreenBox;
 
-/** Levenshtein distance, iterative and allocation-light (attributes are short strings). */
+/** Levenshtein distance, iterative and allocation-light (property values are short strings). */
 function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
   if (a.length === 0) return b.length;
@@ -44,9 +46,9 @@ function levenshtein(a: string, b: string): number {
 }
 
 /**
- * Similarity of two attribute values, 0..1. Case- and whitespace-insensitive, because the two
- * strings compared here are a human's expectation and a DOM attribute, not two identifiers.
- * A containment relation (the target text inside the rendered text, or vice versa) scores at
+ * Similarity of two property values, 0..1. Case- and whitespace-insensitive, because the two
+ * strings compared here are a human's expectation and a control's own text, not two identifiers.
+ * A containment relation (the expected text inside the control's text, or vice versa) scores at
  * least 0.9: that is what makes "Sign in" match "Sign in to continue" — the case fuzzy matching
  * exists for.
  */
@@ -62,18 +64,20 @@ export function similarity(expected: string, actual: string): number {
 }
 
 /**
- * Score one candidate against a fuzzy spec, 0..1. An attribute declared 'exact' is a hard gate: a
- * mismatch zeroes the score rather than lowering it, because "this must be the Sign in button" is a
+ * Score one candidate against a fuzzy spec, 0..1. A property declared 'exact' is a hard gate: a
+ * mismatch zeroes the score rather than lowering it, because "this must be the Save button" is a
  * different claim from "this looks like it".
  */
 export function scoreCandidate(
-  candidate: { attributes: Record<string, string>; text: string },
+  candidate: { properties: Record<string, string>; text?: string },
   spec: FuzzySpec
 ): number {
   const parts: number[] = [];
+  const wanted: Record<string, string> = { ...(spec.properties ?? {}) };
+  if (spec.controlType !== undefined && spec.controlType !== '') wanted['controlType'] = spec.controlType;
 
-  for (const [name, expected] of Object.entries(spec.attributes ?? {})) {
-    const actual = candidate.attributes[name] ?? '';
+  for (const [name, expected] of Object.entries(wanted)) {
+    const actual = candidate.properties[name] ?? '';
     const level = spec.levels?.[name] ?? 'fuzzy';
     const score = similarity(expected, actual);
     if (level === 'exact') {
@@ -87,7 +91,7 @@ export function scoreCandidate(
     }
   }
 
-  if (spec.text !== undefined) parts.push(similarity(spec.text, candidate.text));
+  if (spec.text !== undefined) parts.push(similarity(spec.text, candidate.text ?? ''));
 
   if (parts.length === 0) return 0;
   return parts.reduce((sum, part) => sum + part, 0) / parts.length;
@@ -95,10 +99,10 @@ export function scoreCandidate(
 
 /** Does `main` sit where `relation` says it should, relative to `anchor`? */
 export function relationHolds(relation: NonNullable<AnchorSpec['relation']>, main: Box, anchor: Box): boolean {
-  const mainCenter = { x: main.x + main.width / 2, y: main.y + main.height / 2 };
-  const anchorCenter = { x: anchor.x + anchor.width / 2, y: anchor.y + anchor.height / 2 };
+  const mainCenter = centerOf(main);
+  const anchorCenter = centerOf(anchor);
   const overlap = (a: Box, b: Box) =>
-    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+    a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height;
 
   switch (relation) {
     case 'left':
@@ -121,18 +125,34 @@ export function relationHolds(relation: NonNullable<AnchorSpec['relation']>, mai
   }
 }
 
+/** The middle of a box — where a click lands. */
+export function centerOf(box: Box): { x: number; y: number } {
+  return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+}
+
 /** Distance between two box centres, for picking the closest anchored candidate. */
 export function centerDistance(a: Box, b: Box): number {
-  const dx = (a.x + a.width / 2) - (b.x + b.width / 2);
-  const dy = (a.y + a.height / 2) - (b.y + b.height / 2);
+  const first = centerOf(a);
+  const second = centerOf(b);
+  const dx = first.x - second.x;
+  const dy = first.y - second.y;
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+/** One line naming a box, for a log or an error. */
+export function describeBox(box: Box): string {
+  return `${box.left},${box.top} (${box.width}x${box.height})`;
+}
+
 /**
- * The target a step declares, from either shape: this tool's `target`, or Aro's `selector` +
- * `selectors` fallbacks. A selector string in the `<html …/><webctrl …/>` chain form (exactly
- * what a desktop recorder emits) is parsed into the structured spec, so a
- * selector copied from a recorded session works here unchanged.
+ * The target a step declares, from any of the shapes a definition arrives in:
+ *
+ *  - `target` (this toolkit's structured form),
+ *  - `selectorChain` / `selector` holding a recorded `<wnd …/><ctrl …/>` chain,
+ *  - the step's own `name`/`automationId`/`className`/`controlType` fields (how `desktop.uia` reads),
+ *  - `imagePath` (+ `confidence`), or an explicit `x`/`y` pair.
+ *
+ * Returns null when the step names nothing to find — a plain click where the pointer already is.
  */
 export function targetFromStep(step: Step): TargetSpec | null {
   const declared = step.target as TargetSpec | undefined;
@@ -147,305 +167,192 @@ export function targetFromStep(step: Step): TargetSpec | null {
     return declared;
   }
 
-  const raw = typeof step.selector === 'string' && step.selector.trim() !== '' ? step.selector : undefined;
-  const rawAny = Array.isArray(step.selectors)
-    ? step.selectors.filter((value): value is string => typeof value === 'string' && value.trim() !== '')
-    : undefined;
-
-  const fromChain = raw ? parseSelectorChain(raw) : null;
-  if (fromChain) {
-    if (rawAny?.length) {
-      const extra = rawAny.map((entry) => parseSelectorChain(entry)?.strict ?? entry).filter((entry): entry is string => Boolean(entry));
-      return { ...fromChain, strictAny: extra };
-    }
-    return fromChain;
+  for (const candidate of [step.selectorChain, step.selector]) {
+    if (typeof candidate !== 'string' || candidate.trim() === '') continue;
+    const parsed = parseSelectorChain(candidate);
+    if (parsed) return parsed;
   }
 
-  if (!raw && !rawAny?.length) return null;
-  const spec: TargetSpec = {};
-  if (raw) spec.strict = raw;
-  if (rawAny) spec.strictAny = rawAny;
-  return spec;
+  const uia: UiaSpec = {};
+  for (const field of ['name', 'automationId', 'className', 'controlType'] as const) {
+    const value = step[field];
+    if (typeof value === 'string' && value.trim() !== '') uia[field] = value;
+  }
+  if (Object.keys(uia).length > 0) return { uia };
+
+  const imagePath = typeof step.imagePath === 'string' ? step.imagePath.trim() : '';
+  if (imagePath !== '') {
+    return { image: { path: imagePath, ...(step.confidence !== undefined ? { threshold: Number(step.confidence) } : {}) } };
+  }
+
+  const x = Number(step.x);
+  const y = Number(step.y);
+  if (Number.isFinite(x) && Number.isFinite(y)) return { point: { x, y } };
+  return null;
 }
 
+/** One line naming what a target asks for. */
 export function describeTarget(spec: TargetSpec): string {
   const parts: string[] = [];
-  if (spec.strict) parts.push(`strict=${spec.strict}`);
-  if (spec.strictAny?.length) parts.push(`fallbacks=${spec.strictAny.join(' | ')}`);
-  if (spec.fuzzy) parts.push(`fuzzy=<${spec.fuzzy.tag}${spec.fuzzy.text ? ` text~"${spec.fuzzy.text}"` : ''}>`);
+  if (spec.point) parts.push(`point=${spec.point.x},${spec.point.y}`);
+  if (spec.uia) {
+    const wanted = Object.entries(spec.uia).filter(([, value]) => value !== undefined && value !== '')
+      .map(([key, value]) => `${key}="${String(value)}"`);
+    if (wanted.length > 0) parts.push(`uia(${wanted.join(' ')})`);
+  }
+  if (spec.fuzzy) {
+    const wanted = Object.entries({ ...(spec.fuzzy.properties ?? {}), ...(spec.fuzzy.controlType ? { controlType: spec.fuzzy.controlType } : {}) })
+      .map(([key, value]) => `${key}~"${value}"`);
+    if (spec.fuzzy.text) wanted.push(`text~"${spec.fuzzy.text}"`);
+    parts.push(`fuzzy(${wanted.join(' ')})`);
+  }
+  if (spec.image) parts.push(`image=${spec.image.path}${spec.image.threshold !== undefined ? `@${spec.image.threshold}` : ''}`);
   if (spec.anchor) parts.push(`anchor(${spec.anchor.relation ?? 'near'})`);
   if (spec.idx) parts.push(`idx=${spec.idx}`);
   return parts.join(' ') || '(no target)';
 }
 
+/** One candidate a method found, reduced to what scoring and reporting need. */
+export interface Candidate {
+  properties: Record<string, string>;
+  text: string;
+  box: Box;
+}
+
 export interface ResolveOptions {
-  timeoutMs: number;
-  log: (message: string) => void | Promise<void>;
-  /** Only check what is on the page right now — for `elementExists`, which must not wait. */
-  immediate?: boolean;
+  /** Where each attempt is narrated — the step log, in practice. */
+  log?: (message: string) => void;
+  /** How long the image search may wait. Property lookups do not wait; they read what is there. */
+  timeoutMs?: number;
 }
 
-/**
- * Resolve the element a target describes. Strict selectors first, in order; the fuzzy spec next;
- * anchors filter whatever came out of either. Throws with every method that was tried, so a failure
- * says what the page was asked for instead of just "not found".
- */
-export async function resolveTarget(page: Page, spec: TargetSpec, options: ResolveOptions): Promise<Locator> {
-  const tried: string[] = [];
-  const slice = options.immediate
-    ? 0
-    : Math.max(500, Math.floor(options.timeoutMs / Math.max(1, countMethods(spec))));
+export interface ResolvedTarget {
+  box: Box;
+  point: { x: number; y: number };
+  method: 'point' | 'uia' | 'fuzzy' | 'image';
+  /** One line for the log: what was asked for, which method answered, where it landed. */
+  description: string;
+}
 
-  const strictLocator = await findStrict(page, spec, slice, tried);
-  if (strictLocator) {
-    await options.log(`target found by strict selector (${describeTarget(spec)})`);
-    return strictLocator;
+/** Every element the accessibility API can see right now, reduced to what scoring needs. */
+async function elementCandidates(): Promise<Candidate[]> {
+  const records = await dumpUiaElements({ max: 400 });
+  return records.map((record) => ({
+    properties: {
+      name: record.name,
+      automationId: record.automationId,
+      className: record.className,
+      controlType: record.controlType
+    },
+    text: record.name,
+    box: record.box
+  }));
+}
+
+/** Every property a strict spec asks for must be there, exactly (control types case-insensitively). */
+function matchesStrict(candidate: Candidate, uia: UiaSpec): boolean {
+  for (const [key, wanted] of Object.entries(uia)) {
+    if (wanted === undefined || wanted === '') continue;
+    const actual = candidate.properties[key] ?? '';
+    if (key === 'controlType') {
+      if (actual.toLowerCase() !== wanted.toLowerCase()) return false;
+    } else if (actual !== wanted) return false;
   }
+  return true;
+}
 
-  let fuzzyLocator = await findFuzzy(page, spec, slice, tried, options);
-  if (!fuzzyLocator && spec.anchor) {
-    // Anchors exist to disambiguate something the main target matched too loosely. When the fuzzy
-    // pass found nothing at all, try the anchor's own neighbourhood as a last resort.
-    const anchored = await findThroughAnchor(page, spec, slice, tried);
-    if (anchored) {
-      await options.log(`target found through its anchor (${describeTarget(spec)})`);
-      return anchored;
+/** Top to bottom, left to right — the order a person counts elements in, which is what `idx` means. */
+function readingOrder(candidates: Candidate[]): Candidate[] {
+  return [...candidates].sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left);
+}
+
+/** The property pass: the strict map first, then the scored one. */
+async function propertyCandidates(
+  spec: TargetSpec,
+  log: (message: string) => void
+): Promise<{ method: 'uia' | 'fuzzy'; candidates: Candidate[] } | null> {
+  const all = await elementCandidates();
+
+  if (spec.uia) {
+    const strict = readingOrder(all.filter((candidate) => matchesStrict(candidate, spec.uia!)));
+    if (strict.length > 0) {
+      log(`uia: ${strict.length} element(s) match ${describeTarget({ uia: spec.uia })}`);
+      return { method: 'uia', candidates: strict };
     }
-  }
-  if (fuzzyLocator) return fuzzyLocator;
-
-  throw new Error(`target not found — tried ${tried.join('; ') || describeTarget(spec)}`);
-}
-
-function countMethods(spec: TargetSpec): number {
-  let count = 0;
-  if (spec.strict) count++;
-  count += spec.strictAny?.length ?? 0;
-  if (spec.fuzzy) count++;
-  if (spec.anchor) count++;
-  return count;
-}
-
-async function findStrict(page: Page, spec: TargetSpec, slice: number, tried: string[]): Promise<Locator | null> {
-  const candidates = [spec.strict, ...(spec.strictAny ?? [])].filter(
-    (value): value is string => typeof value === 'string' && value.trim() !== ''
-  );
-  // Native text targeting: Playwright's own text engine — exact enough, and cheap.
-  if (spec.text) candidates.push(spec.textExact ? `text="${spec.text.replace(/"/g, '\\"')}"` : `text=${spec.text}`);
-  if (spec.scope && Object.keys(spec.scope).length > 0) {
-    tried.push(`scope ${Object.entries(spec.scope).map(([key, value]) => `${key}='${value}'`).join(' ')}`);
+    log(`uia: no element matches ${describeTarget({ uia: spec.uia })}`);
   }
 
-  for (const selector of candidates) {
-    const locator = page.locator(selector);
-    try {
-      const count = await locator.count();
-      if (count === 0) {
-        if (slice === 0) {
-          tried.push(`${selector} → 0 matches`);
-          continue;
-        }
-        // The element may simply not be there yet: a strict candidate waits for its slice, exactly
-        // as a plain page.click() would, so `waitForElement` and a late-rendered page still work.
-        await locator.first().waitFor({ state: 'visible', timeout: slice });
-      }
-
-      if (!spec.anchor && spec.idx === undefined) return locator.first();
-
-      const anchorBox = spec.anchor ? await anchorBoxFor(page, spec.anchor, slice, tried) : null;
-      const relation = spec.anchor?.relation ?? 'near';
-      let matches = await waitForMatches(locator, spec.idx ?? 1, slice);
-
-      if (anchorBox && spec.anchor) {
-        const anchored = matches.filter((candidate) => {
-          const box = candidate.box;
-          return box ? relationHolds(relation, box, anchorBox) : false;
-        });
-        if (anchored.length > 0) {
-          // Nearest to the anchor first: with two identical inputs beside one label, the closer one
-          // is the one a human would have pointed at.
-          matches = anchored.sort((a, b) => centerDistance(a.box!, anchorBox) - centerDistance(b.box!, anchorBox));
-        } else if (matches.length > 0) {
-          tried.push(`${selector} + anchor(${relation}) → no match was ${relation} of the anchor`);
-        }
-      }
-
-      if (matches.length === 0) {
-        tried.push(`${selector} → 0 visible matches`);
-        continue;
-      }
-      const pick = matches[(spec.idx ?? 1) - 1];
-      if (!pick) {
-        tried.push(`${selector} → ${matches.length} matches, idx=${spec.idx}`);
-        continue;
-      }
-      await pick.locator.waitFor({ state: 'visible', timeout: slice });
-      return pick.locator;
-    } catch (e) {
-      tried.push(`${selector} → ${firstLine((e as Error).message)}`);
+  if (spec.fuzzy) {
+    const threshold = spec.fuzzy.threshold ?? 0.7;
+    const scored = all
+      .map((candidate) => ({ candidate, score: scoreCandidate(candidate, spec.fuzzy!) }))
+      .filter((entry) => entry.score >= threshold)
+      .sort((a, b) => b.score - a.score);
+    if (scored.length > 0) {
+      log(`fuzzy: ${scored.length} element(s) scored ≥ ${threshold} (best ${scored[0]!.score.toFixed(2)})`);
+      return { method: 'fuzzy', candidates: readingOrder(scored.map((entry) => entry.candidate)) };
     }
+    log(`fuzzy: nothing scored ≥ ${threshold}`);
   }
+
   return null;
 }
 
 /**
- * Every visible match of a selector, waiting for at least `need` of them to appear (a list that
- * renders row by row is the case this exists for). Returns what it has when the slice runs out.
+ * Find the thing a target names and return where it is. Throws when nothing matched, naming what
+ * was tried — the caller decides whether to heal, retry or fail.
  */
-async function waitForMatches(locator: Locator, need: number, timeoutMs: number): Promise<Array<{ locator: Locator; box: Box | null }>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const matches = await collectVisible(locator);
-    if (matches.length >= need || timeoutMs === 0 || Date.now() > deadline) return matches;
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  }
-}
-
-async function collectVisible(locator: Locator): Promise<Array<{ locator: Locator; box: Box | null }>> {
-  const matches: Array<{ locator: Locator; box: Box | null }> = [];
-  for (const candidate of await locator.all()) {
-    if (!(await candidate.isVisible().catch(() => false))) continue;
-    matches.push({ locator: candidate, box: await candidate.boundingBox().catch(() => null) });
-  }
-  return matches;
-}
-
-interface Candidate {
-  locator: Locator;
-  attributes: Record<string, string>;
-  text: string;
-  box: Box | null;
-  score: number;
-}
-
-async function findFuzzy(
-  page: Page,
+export async function resolveTarget(
+  backend: DesktopBackend,
   spec: TargetSpec,
-  slice: number,
-  tried: string[],
-  options: ResolveOptions
-): Promise<Locator | null> {
-  const fuzzy = spec.fuzzy;
-  if (!fuzzy) return null;
+  options: ResolveOptions = {}
+): Promise<ResolvedTarget> {
+  const log = options.log ?? (() => {});
+  const anchor = spec.anchor ? await resolveTarget(backend, spec.anchor.target, options) : undefined;
 
-  const threshold = fuzzy.threshold ?? 0.7;
-  const anchorBox = spec.anchor ? await anchorBoxFor(page, spec.anchor, slice, tried) : null;
-  const attributesWanted = Object.keys(fuzzy.attributes ?? {});
-  const candidates: Candidate[] = [];
-  let candidateCount = 0;
-  let bestScoreSeen: number | null = null;
-
-  try {
-    const all = await page.locator(fuzzy.tag.toLowerCase()).all();
-    for (const locator of all) {
-      if (!(await locator.isVisible().catch(() => false))) continue;
-      candidateCount++;
-      const attributes: Record<string, string> = {};
-      for (const name of attributesWanted) {
-        attributes[name] = (await locator.getAttribute(name).catch(() => null)) ?? '';
-      }
-      // `aaname` is the accessible name — approximated by aria-label, then the element's text.
-      if (attributesWanted.includes('aaname') && !attributes['aaname']) {
-        attributes['aaname'] = (await locator.getAttribute('aria-label').catch(() => null))
-          ?? (await locator.innerText().catch(() => '')) ?? '';
-      }
-      const text = options.immediate ? '' : (await locator.innerText().catch(() => '')) ?? '';
-      const score = scoreCandidate({ attributes, text }, fuzzy);
-      bestScoreSeen = bestScoreSeen === null ? score : Math.max(bestScoreSeen, score);
-      if (score <= 0 || score < threshold) continue;
-      candidates.push({ locator, attributes, text, box: await locator.boundingBox().catch(() => null), score });
-    }
-  } catch (e) {
-    tried.push(`fuzzy <${fuzzy.tag}> → ${firstLine((e as Error).message)}`);
-    return null;
+  let found: { method: ResolvedTarget['method']; candidates: Candidate[] } | undefined;
+  if (spec.point) {
+    found = {
+      method: 'point',
+      candidates: [{ properties: {}, text: '', box: { left: spec.point.x, top: spec.point.y, width: 0, height: 0 } }]
+    };
+  } else if (spec.uia || spec.fuzzy) {
+    const properties = await propertyCandidates(spec, log);
+    if (properties) found = properties;
+  }
+  if (!found && spec.image) {
+    const box = await backend.findImage(spec.image.path, {
+      ...(spec.image.threshold !== undefined ? { threshold: spec.image.threshold } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {})
+    });
+    log(`image: ${spec.image.path} found at ${describeBox(box)}`);
+    found = { method: 'image', candidates: [{ properties: {}, text: '', box }] };
+  }
+  if (!found) {
+    throw new Error(`nothing matched ${describeTarget(spec)} — add an image or point target, or let healing suggest one`);
   }
 
-  let ranked = candidates.sort((a, b) => b.score - a.score);
-  if (anchorBox && spec.anchor) {
-    const relation = spec.anchor.relation ?? 'near';
-    const anchored = ranked.filter(candidate => candidate.box && relationHolds(relation, candidate.box, anchorBox));
-    if (anchored.length > 0) {
-      ranked = anchored.sort((a, b) => centerDistance(a.box!, anchorBox) - centerDistance(b.box!, anchorBox));
-      await options.log(`fuzzy selector matched ${anchored.length} element(s) near the anchor (${relation})`);
-    } else if (ranked.length > 0) {
-      tried.push(`anchor(${relation}) → no candidate was ${relation} of the anchor`);
-    }
+  const relation: NonNullable<AnchorSpec['relation']> = spec.anchor?.relation ?? 'near';
+  const candidates = anchor
+    ? found.candidates.filter((candidate) => relationHolds(relation, candidate.box, anchor.box))
+    : found.candidates;
+  if (candidates.length === 0) {
+    throw new Error(`nothing that matched ${describeTarget(spec)} sits ${relation} the anchor at ${describeBox(anchor!.box)}`);
   }
 
-  if (ranked.length === 0) {
-    const scored = bestScoreSeen;
-    tried.push(scored === null
-      ? `fuzzy <${fuzzy.tag}> → no visible element of that tag`
-      : `fuzzy <${fuzzy.tag}> → ${candidateCount} element(s), best score ${scored.toFixed(2)} < ${threshold}`);
-    return null;
-  }
-
-  const pick = ranked[(fuzzy.idx ?? 1) - 1];
-  if (!pick) {
-    tried.push(`fuzzy <${fuzzy.tag}> → ${ranked.length} matches, idx=${fuzzy.idx}`);
-    return null;
-  }
-  await options.log(`target found by fuzzy selector (score ${pick.score.toFixed(2)}, ${ranked.length} match(es))`);
-  return pick.locator;
+  const index = Math.min(Math.max(spec.idx ?? 1, 1), candidates.length) - 1;
+  const chosen = candidates[index]!;
+  return {
+    box: chosen.box,
+    point: centerOf(chosen.box),
+    method: found.method,
+    description: `${describeTarget(spec)}${anchor ? ` ${relation} anchor` : ''} → ${found.method} at ${describeBox(chosen.box)}`
+  };
 }
 
-async function anchorBoxFor(page: Page, anchor: AnchorSpec, slice: number, tried: string[]): Promise<Box | null> {
-  try {
-    const locator = await resolveTarget(page, anchor.target, { timeoutMs: slice, log: () => {} });
-    return await locator.boundingBox();
-  } catch (e) {
-    tried.push(`anchor → ${firstLine((e as Error).message)}`);
-    return null;
-  }
-}
-
-/**
- * Last resort: no candidate scored, so scan every visible element of the anchor's relation and take
- * the closest one that looks interactive. This is the "the label is still there" branch — the same
- * fallback a human performs by hand.
- */
-async function findThroughAnchor(page: Page, spec: TargetSpec, slice: number, tried: string[]): Promise<Locator | null> {
-  const anchor = spec.anchor;
-  if (!anchor) return null;
-  const box = await anchorBoxFor(page, anchor, slice, tried);
-  if (!box) return null;
-
-  const relation = anchor.relation ?? 'near';
-  const tags = spec.fuzzy?.tag ? [spec.fuzzy.tag.toLowerCase()] : ['input', 'button', 'a', 'select', 'textarea'];
-  let best: { locator: Locator; distance: number } | null = null;
-
-  for (const tag of tags) {
-    for (const locator of await page.locator(tag).all()) {
-      if (!(await locator.isVisible().catch(() => false))) continue;
-      const candidate = await locator.boundingBox().catch(() => null);
-      if (!candidate || !relationHolds(relation, candidate, box)) continue;
-      const distance = centerDistance(candidate, box);
-      if (!best || distance < best.distance) best = { locator, distance };
-    }
-  }
-  return best?.locator ?? null;
-}
-
-function firstLine(message: string): string {
-  return message.split('\n')[0] ?? message;
-}
-
-// ── Healing ────────────────────────────────────────────────────────────────────────────────────
-
-/**
- * Target healing — what runs when every declared method failed. Local and evidence-only, two passes:
- *
- *   1. `relaxed-fuzzy` — the declared attributes re-scored without the hard 'exact' gates that a
- *      changed page usually breaks, against a lower bar;
- *   2. `resemblance`   — hints taken from the selector text itself (id / name / class / [attr=v] /
- *      `text`) and scored against the visible elements with the same similarity function fuzzy
- *      matching uses.
- *
- * A candidate must reach `threshold` (default 0.75). Nothing is invented — no ML, no service, only
- * strings already on the page. The caller decides whether to use the result or only report it.
- */
 export interface HealOutcome {
-  locator: Locator;
+  box: Box;
+  point: { x: number; y: number };
   /** Which pass found it. */
   method: 'relaxed-fuzzy' | 'resemblance';
   score: number;
@@ -456,221 +363,74 @@ export interface HealOutcome {
 }
 
 export interface HealOptions {
-  /** Minimum score for a healed candidate, 0..1. Default 0.75. */
+  /** Minimum score for a healed candidate, 0..1. Default: the target's, else 0.75. */
   threshold?: number;
-}
-
-export interface Hints {
-  tag?: string;
-  id?: string;
-  name?: string;
-  type?: string;
-  placeholder?: string;
-  classes: string[];
-  text?: string;
-}
-
-/** Everything a selector string and/or `text` can be re-searched by, or null when it carries none. */
-export function selectorHints(spec: TargetSpec): Hints | null {
-  const hints: Hints = { classes: [] };
-  const source =
-    typeof spec.strict === 'string' && spec.strict.trim() !== ''
-      ? spec.strict
-      : spec.strictAny?.find((value) => typeof value === 'string' && value.trim() !== '');
-  if (typeof spec.text === 'string' && spec.text.trim() !== '') hints.text = spec.text;
-
-  if (source) {
-    const tag = /^([a-zA-Z][\w-]*)/.exec(source.trim());
-    if (tag) hints.tag = tag[1]!.toLowerCase();
-    const id = /#([\w-]+)/.exec(source);
-    if (id) hints.id = id[1];
-    for (const token of source.matchAll(/\.([\w-]+)/g)) hints.classes.push(token[1]!);
-    for (const attr of source.matchAll(/\[([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]\s]+))/g)) {
-      const key = attr[1]!.toLowerCase();
-      const value = attr[2] ?? attr[3] ?? attr[4] ?? '';
-      if (value === '') continue;
-      if (key === 'id') hints.id = value;
-      else if (key === 'name') hints.name = value;
-      else if (key === 'type') hints.type = value;
-      else if (key === 'placeholder') hints.placeholder = value;
-    }
-  }
-
-  // `type`/`placeholder` alone match the world; require one piece of real evidence.
-  const usable = hints.id || hints.name || hints.text || hints.classes.length > 0;
-  return usable ? hints : null;
-}
-
-/** One visible element, reduced to what healing scores and what a suggestion can be built from. */
-interface ScannedElement {
-  tag: string;
-  locator: Locator;
-  id: string;
-  name: string;
-  type: string;
-  placeholder: string;
-  classes: string[];
-  text: string;
-}
-
-/** Healing scans stop here so a huge page cannot turn a failed step into a long walk. */
-const HEAL_SCAN_LIMIT = 600;
-
-async function scanTags(page: Page, tags: string[]): Promise<ScannedElement[]> {
-  const found: ScannedElement[] = [];
-  const seenIds = new Set<string>();
-  for (const tag of tags) {
-    const locator = page.locator(tag);
-    const count = Math.min(await locator.count().catch(() => 0), HEAL_SCAN_LIMIT);
-    for (let index = 0; index < count && found.length < HEAL_SCAN_LIMIT; index++) {
-      const item = locator.nth(index);
-      if (!(await item.isVisible().catch(() => false))) continue;
-      const id = (await item.getAttribute('id').catch(() => null)) ?? '';
-      if (id !== '' && seenIds.has(id)) continue;
-      if (id !== '') seenIds.add(id);
-      const placeholder = (await item.getAttribute('placeholder').catch(() => null)) ?? '';
-      const aria = (await item.getAttribute('aria-label').catch(() => null)) ?? '';
-      const text = ((await item.innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
-        || aria
-        || placeholder;
-      found.push({
-        tag: tag.startsWith('[') || tag.startsWith('.') ? 'input' : tag,
-        locator: item,
-        id,
-        name: (await item.getAttribute('name').catch(() => null)) ?? '',
-        type: (await item.getAttribute('type').catch(() => null)) ?? '',
-        placeholder,
-        classes: ((await item.getAttribute('class').catch(() => null)) ?? '').split(/\s+/).filter(Boolean),
-        text: text.slice(0, 120)
-      });
-    }
-  }
-  return found;
-}
-
-/** A target that resolves to a scanned element — the thing a healed run suggests pasting back. */
-function suggestedTarget(candidate: ScannedElement): TargetSpec {
-  if (candidate.id) return { strict: `#${candidate.id}` };
-  if (candidate.text) return { fuzzy: { tag: candidate.tag.toUpperCase(), text: candidate.text.slice(0, 80) } };
-  if (candidate.name) return { strict: `[name="${candidate.name}"]` };
-  return { fuzzy: { tag: candidate.tag.toUpperCase() } };
-}
-
-/** Score a scan against the hints, and name the strongest component for the log line. */
-function scoreHints(hints: Hints, candidate: ScannedElement): { score: number; label: string } {
-  const strong: Array<{ label: string; value: number }> = [];
-  if (hints.id) strong.push({ label: `id '${hints.id}' ≈ '${candidate.id}'`, value: similarity(hints.id, candidate.id) });
-  if (hints.name) strong.push({ label: `name '${hints.name}' ≈ '${candidate.name}'`, value: similarity(hints.name, candidate.name) });
-  if (hints.text) strong.push({ label: `text '${hints.text}' ≈ '${candidate.text}'`, value: similarity(hints.text, candidate.text) });
-  if (strong.length > 0) {
-    const best = strong.reduce((a, b) => (b.value > a.value ? b : a));
-    const score = strong.reduce((sum, part) => sum + part.value, 0) / strong.length;
-    return { score, label: best.label };
-  }
-  // Weak evidence only (a class-based selector): token overlap wins, then placeholder/type refine.
-  const weak: number[] = [];
-  if (hints.classes.length > 0) {
-    weak.push(Math.max(...hints.classes.map((want) => Math.max(...candidate.classes.map((have) => similarity(want, have)), 0))));
-  }
-  if (hints.placeholder) weak.push(similarity(hints.placeholder, candidate.placeholder));
-  if (hints.type) weak.push(similarity(hints.type, candidate.type));
-  const label = hints.classes.length > 0 ? `class '.${hints.classes[0]}' ≈ '${candidate.classes.join(' ')}'` : 'attribute match';
-  return { score: weak.length > 0 ? weak.reduce((sum, part) => sum + part, 0) / weak.length : 0, label };
-}
-
-/** Pass 1: the declared fuzzy spec, re-scored with every gate relaxed. */
-async function healRelaxedFuzzy(page: Page, fuzzy: FuzzySpec, threshold: number): Promise<{ candidate: ScannedElement; score: number } | null> {
-  const attributesWanted = Object.keys(fuzzy.attributes ?? {});
-  const relaxed: FuzzySpec = {
-    tag: fuzzy.tag,
-    ...(fuzzy.attributes ? { attributes: fuzzy.attributes } : {}),
-    ...(fuzzy.text !== undefined ? { text: fuzzy.text } : {}),
-    threshold
-  };
-  const locator = page.locator(fuzzy.tag.toLowerCase());
-  const count = Math.min(await locator.count().catch(() => 0), HEAL_SCAN_LIMIT);
-  let best: { candidate: ScannedElement; score: number } | null = null;
-
-  for (let index = 0; index < count; index++) {
-    const item = locator.nth(index);
-    if (!(await item.isVisible().catch(() => false))) continue;
-    const attributes: Record<string, string> = {};
-    for (const name of attributesWanted) {
-      attributes[name] = (await item.getAttribute(name).catch(() => null)) ?? '';
-    }
-    if (attributesWanted.includes('aaname') && !attributes['aaname']) {
-      attributes['aaname'] = (await item.getAttribute('aria-label').catch(() => null))
-        ?? (await item.innerText().catch(() => '')) ?? '';
-    }
-    const text = ((await item.innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim();
-    const score = scoreCandidate({ attributes, text }, relaxed);
-    if (score < threshold) continue;
-    if (!best || score > best.score) {
-      best = {
-        score,
-        candidate: {
-          tag: fuzzy.tag,
-          locator: item,
-          id: (await item.getAttribute('id').catch(() => null)) ?? '',
-          name: attributes['name'] ?? (await item.getAttribute('name').catch(() => null)) ?? '',
-          type: attributes['type'] ?? '',
-          placeholder: attributes['placeholder'] ?? '',
-          classes: (attributes['class'] ?? '').split(/\s+/).filter(Boolean),
-          text: text.slice(0, 120)
-        }
-      };
-    }
-  }
-  return best;
+  log?: (message: string) => void;
 }
 
 /**
- * Run the healing passes for a target that did not resolve. Returns the best candidate at or above
- * the threshold, or null when the page offers nothing similar ("no heals available").
+ * Healing for a target that did not resolve. Two passes, both honest about what they did:
+ *
+ *   1. `relaxed-fuzzy` — the properties the target asked for, re-scored with every 'exact' gate
+ *      dropped. This is the pass that survives a renamed control or a moved button.
+ *   2. `resemblance`   — the image, retried with a lower threshold.
+ *
+ * Returns null when neither pass found anything worth offering ("no heals available").
  */
-export async function healTarget(page: Page, spec: TargetSpec, options: HealOptions = {}): Promise<HealOutcome | null> {
-  const threshold = Math.min(Math.max(options.threshold ?? 0.75, 0), 1);
-  const outcomes: HealOutcome[] = [];
+export async function healTarget(
+  backend: DesktopBackend,
+  spec: TargetSpec,
+  options: HealOptions = {}
+): Promise<HealOutcome | null> {
+  const threshold = Math.min(Math.max(options.threshold ?? spec.healThreshold ?? 0.75, 0), 1);
+  const log = options.log ?? (() => {});
 
-  if (spec.fuzzy) {
-    const relaxed = await healRelaxedFuzzy(page, spec.fuzzy, threshold);
-    if (relaxed) {
-      const target = suggestedTarget(relaxed.candidate);
-      outcomes.push({
-        locator: relaxed.candidate.locator,
-        method: 'relaxed-fuzzy',
-        score: relaxed.score,
-        target,
-        detail: `relaxed fuzzy <${spec.fuzzy.tag}> scored ${relaxed.score.toFixed(2)} (bar ${threshold}) → ${JSON.stringify(target)}`
-      });
+  const wanted: Record<string, string> = { ...(spec.fuzzy?.properties ?? {}) };
+  if (spec.uia) for (const [key, value] of Object.entries(spec.uia)) if (value) wanted[key] = value;
+  if (spec.fuzzy?.controlType) wanted['controlType'] = spec.fuzzy.controlType;
+
+  if (Object.keys(wanted).length > 0) {
+    try {
+      const all = await elementCandidates();
+      const scored = all
+        .map((candidate) => ({ candidate, score: scoreCandidate(candidate, { properties: wanted, ...(spec.fuzzy?.text ? { text: spec.fuzzy.text } : {}) }) }))
+        .filter((entry) => entry.score >= threshold)
+        .sort((a, b) => b.score - a.score);
+      const best = scored[0];
+      if (best) {
+        const properties: Record<string, string> = {};
+        for (const key of Object.keys(wanted)) {
+          const actual = best.candidate.properties[key];
+          if (actual) properties[key] = actual;
+        }
+        const target: TargetSpec = { fuzzy: { properties, threshold: Math.max(0.5, Number(best.score.toFixed(2)) - 0.1) } };
+        log(`relaxed-fuzzy: ${describeTarget(target)} scored ${best.score.toFixed(2)}`);
+        return {
+          box: best.candidate.box,
+          point: centerOf(best.candidate.box),
+          method: 'relaxed-fuzzy',
+          score: best.score,
+          target,
+          detail: `${describeTarget(target)} (${best.score.toFixed(2)})`
+        };
+      }
+    } catch (error) {
+      // A host without an accessibility API has nothing to re-score; the image pass may still work.
+      log(`relaxed-fuzzy: unavailable here (${(error as Error).message})`);
     }
   }
 
-  const hints = selectorHints(spec);
-  if (hints) {
-    const tags = new Set<string>();
-    if (hints.tag) tags.add(hints.tag);
-    for (const fallback of ['input', 'button', 'a', 'select', 'textarea']) tags.add(fallback);
-    if (hints.id) tags.add('[id]');
-    const scanned = await scanTags(page, [...tags]);
-    let best: { candidate: ScannedElement; score: number; label: string } | null = null;
-    for (const candidate of scanned) {
-      const { score, label } = scoreHints(hints, candidate);
-      if (score < threshold) continue;
-      if (!best || score > best.score) best = { candidate, score, label };
-    }
-    if (best) {
-      const target = suggestedTarget(best.candidate);
-      outcomes.push({
-        locator: best.candidate.locator,
-        method: 'resemblance',
-        score: best.score,
-        target,
-        detail: `resemblance: ${best.label} (score ${best.score.toFixed(2)}) → ${JSON.stringify(target)}`
-      });
+  if (spec.image) {
+    const relaxed = Math.max(0.45, Number((spec.image.threshold ?? 0.9).toFixed(2)) - 0.15);
+    try {
+      const box = await backend.findImage(spec.image.path, { threshold: relaxed });
+      const target: TargetSpec = { image: { ...spec.image, threshold: relaxed } };
+      log(`resemblance: ${spec.image.path} matched at threshold ${relaxed}`);
+      return { box, point: centerOf(box), method: 'resemblance', score: relaxed, target, detail: `${describeTarget(target)}` };
+    } catch {
+      log(`resemblance: ${spec.image.path} did not match at threshold ${relaxed}`);
     }
   }
 
-  outcomes.sort((a, b) => b.score - a.score);
-  return outcomes[0] ?? null;
+  return null;
 }

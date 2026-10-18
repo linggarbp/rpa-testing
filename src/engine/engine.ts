@@ -12,15 +12,13 @@
  */
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Browser, Locator, Page } from 'playwright';
 import { normalizeAction, parseWorkflow, validateWorkflow, type HealMode, type Step, type TargetSpec, type Workflow } from '../workflow/model.js';
 import {
   QueueStore, deleteFile, ensureDir, fileExists, listFiles, loadSettings, moveFile, readTable, writeTable
 } from './store.js';
 import { appendSheet, askHuman, readPdfText, readSheet, receiveMail, runUia, sendMail } from '../services/gaps.js';
+import { requireCapability, selectBackend, type DesktopBackend } from '../services/desktop/backend.js';
 import { describeTarget, healTarget, resolveTarget, targetFromStep } from './targeting.js';
-import { WebDriverClient, type MobileDriver } from '../services/webdriver.js';
-import { startWebdriverIo } from '../services/webdriverio-driver.js';
 import { buildDocx, readDocx } from './word.js';
 
 /** An exception a workflow raised on purpose — business vs application classification. */
@@ -124,10 +122,9 @@ export class Engine {
   private readonly logs: LogLine[] = [];
   private readonly options: EngineOptions;
   private readonly queues: QueueStore;
-  private browser: Browser | undefined;
-  private page: Page | undefined;
-  /** The open mobile session, closed with the run like the browser is. */
-  private webdriver: MobileDriver | undefined;
+  /** The desktop backend this run picked (probed once, reused) and whether that was logged. */
+  private desktop: DesktopBackend | undefined;
+  private desktopLogged = false;
   private deadline = 0;
   private stepsRun = 0;
   private runDirCreated = false;
@@ -178,12 +175,6 @@ export class Engine {
     } catch (e) {
       failure = (e as Error).message;
       await this.log('error', `Workflow failed: ${failure}`);
-    } finally {
-      if (this.browser) await this.browser.close().catch(() => {});
-      this.browser = undefined;
-      this.page = undefined;
-      if (this.webdriver) await this.webdriver.end().catch(() => {});
-      this.webdriver = undefined;
     }
 
     return {
@@ -237,6 +228,7 @@ export class Engine {
         this.retryRemaining = attempts - attempt;
         try {
           await this.executeStep(step, hooks);
+          if (step.verify && step.type === 'desktop') await this.verifyDesktop(step);
           this.stepsRun++;
           break;
         } catch (e) {
@@ -266,8 +258,6 @@ export class Engine {
 
   private async executeStep(step: Step, hooks: RunHooks): Promise<void> {
     switch (step.type) {
-      case 'web':
-        return this.runWeb(step, hooks);
       case 'control':
         return this.runControl(step, hooks);
       case 'api':
@@ -296,272 +286,10 @@ export class Engine {
         return this.runGsheet(step);
       case 'hitl':
         return this.runHitl(step);
-      case 'mobile':
-        return this.runMobile(step);
       case 'word':
         return this.runWord(step);
       default:
         throw new Error(`Unknown step type: ${step.type}`);
-    }
-  }
-
-  // ── Web ────────────────────────────────────────────────────────────────────────────────────────
-
-  private async pageFor(): Promise<Page> {
-    if (!this.page) {
-      const { chromium } = await this.loadOptional<typeof import('playwright')>(
-        'playwright',
-        'Install it with `npm i playwright`, then `npx playwright install chromium`.'
-      );
-      this.browser = await chromium.launch({ headless: this.options.headless ?? true });
-      this.page = await this.browser.newPage();
-    }
-    return this.page;
-  }
-
-  private async runWeb(step: Step, hooks: RunHooks): Promise<void> {
-    const page = await this.pageFor();
-    const timeout = this.duration(step.timeoutMs, 30000, 300000);
-    const target = targetFromStep(step);
-    const log = (message: string) => this.log('info', message);
-    const resolve = async () => {
-      if (!target) throw new Error(`web.${String(step.action)} needs a selector or a target.`);
-      return this.resolveWithHeal(page, target, step, timeout, log);
-    };
-
-    switch (normalizeAction(step.action, 'web')) {
-      case 'goto':
-        await page.goto(this.interp(step.url), { waitUntil: 'domcontentloaded', timeout });
-        break;
-      case 'click':
-        await (await resolve()).click({ timeout });
-        break;
-      case 'type': {
-        const element = await resolve();
-        const text = this.interp(step.text);
-        if (step.clear === false) await element.pressSequentially(text, { timeout });
-        else await element.fill(text, { timeout });
-        break;
-      }
-      case 'hover':
-        await (await resolve()).hover({ timeout });
-        break;
-      case 'selectOption': {
-        const element = await resolve();
-        const label = step.label !== undefined ? this.interp(String(step.label)) : undefined;
-        const value = step.value !== undefined ? this.interp(String(step.value)) : undefined;
-        if (label === undefined && value === undefined) throw new Error('web.selectOption needs "label" or "value".');
-        await element.selectOption(label !== undefined ? { label } : { value: value! }, { timeout });
-        break;
-      }
-      case 'getText': {
-        const text = ((await (await resolve()).textContent({ timeout })) ?? '').trim();
-        await this.save(step, text, `read ${text.length} char(s)`);
-        break;
-      }
-      case 'getAttribute': {
-        const name = String(step.attribute ?? '');
-        if (!name) throw new Error('web.getAttribute needs an "attribute" name.');
-        const element = await resolve();
-        // `value` is a property, not an attribute: reading the attribute of a filled input returns
-        // whatever the HTML was born with, which is never what the caller meant.
-        const value = name.toLowerCase() === 'value'
-          ? await element.inputValue({ timeout }).catch(() => '')
-          : (await element.getAttribute(name, { timeout })) ?? '';
-        await this.save(step, value, `${name} = ${value.length} char(s)`);
-        break;
-      }
-      case 'elementExists': {
-        // The question IS whether it is there, so a miss is an answer, not a failure — and it never
-        // waits the full timeout for it.
-        const exists = await this.elementExists(step);
-        if (step.saveAs) this.vars[String(step.saveAs)] = exists ? 'true' : 'false';
-        await this.log('info', `elementExists → ${exists ? 'true' : 'false'}`);
-        break;
-      }
-      case 'waitForElement': {
-        // A wait is a check, not an interaction: it stays strict on purpose — healing it would
-        // change what is being awaited. The interactions above are the ones that heal.
-        if (!target) throw new Error('web.waitForElement needs a selector or a target.');
-        const element = await resolveTarget(page, target, { timeoutMs: timeout, log });
-        await element.waitFor({ state: (step.state as 'visible' | 'attached') ?? 'visible', timeout });
-        break;
-      }
-      case 'pressKeys': {
-        const keys = this.interp(String(step.keys ?? step.key ?? ''));
-        if (!keys) throw new Error('web.pressKeys needs "keys", e.g. Control+A.');
-        if (target) await (await resolve()).press(keys, { timeout });
-        else await page.keyboard.press(keys);
-        break;
-      }
-      case 'scroll': {
-        if (target) await (await resolve()).scrollIntoViewIfNeeded({ timeout });
-        else await page.mouse.wheel(0, Math.min(Math.max(Number(step.amount ?? 600) || 0, -20000), 20000));
-        break;
-      }
-      case 'screenshot': {
-        const file = this.interp(String(step.path ?? '')) || await this.defaultScreenshot(`web-${this.stepsRun + 1}`);
-        await page.screenshot({ path: file, fullPage: step.fullPage === true });
-        await this.log('info', `screenshot saved to ${file}`);
-        break;
-      }
-      case 'assertText': {
-        const text = this.interp(step.text);
-        const content = await page.content();
-        if (!content.includes(text)) throw new Error(`assertText failed: "${text}" not found on the page`);
-        break;
-      }
-      case 'extractTable': {
-        // A whole table in one round-trip. The callback runs INSIDE the page and is serialised from
-        // its source, so it has to be self-contained: no imported helpers, no named inner functions
-        // (the bundler's name-preserving transform injects a reference the page cannot resolve).
-        const selector = this.interp(String(step.table ?? ''));
-        if (!selector) throw new Error('web.extractTable needs "table" — the CSS selector of the table.');
-        const locator = page.locator(selector);
-        await locator.first().waitFor({ state: 'attached', timeout })
-          .catch(() => { throw new Error(`web.extractTable: no table matched "${selector}" within ${timeout}ms.`); });
-        const matched = await locator.count();
-        const tables = await locator.evaluateAll((elements: Element[]) => elements
-          .filter((element) => element.tagName === 'TABLE')
-          .map((table) => Array.from((table as HTMLTableElement).rows)
-            .map((row) => Array.from(row.cells).map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim()))));
-        if (tables.length === 0) {
-          throw new Error(`web.extractTable: "${selector}" matched ${matched} element(s), none of them a <table>.`);
-        }
-        const grid = tables[0]!;
-        const rows = this.tableRows(grid, step.headerRow !== false);
-        if (step.saveAs) {
-          this.vars[String(step.saveAs)] = JSON.stringify(rows);
-          this.vars[`${String(step.saveAs)}.count`] = String(rows.length);
-        }
-        await this.log('info', `extractTable ${selector} → ${rows.length} row(s), ${grid[0]?.length ?? 0} column(s)${matched > 1 ? ` (${matched} tables matched; the first was read)` : ''}`);
-        break;
-      }
-      default:
-        throw new Error(`Unknown web action: ${step.action}`);
-    }
-    if (step.verify) await this.verifyAfter(page, step, timeout);
-  }
-
-  /**
-   * Resolve a target for an interaction, healing when every declared method failed:
-   *
-   * - `off`       — unchanged failure;
-   * - `recommend` (default) — fail, but the candidate the healing pass found is logged and appended
-   *   to the error, so the fix is one paste away;
-   * - `auto`      — act on the healed element and continue; the log line and the run's `heals`
-   *   record say which target was healed to what.
-   *
-   * Healing is skipped while retries remain (the retry has not happened yet). Checks — waits,
-   * `elementExists`, `verify` — never heal; see runWeb.
-   */
-  private async resolveWithHeal(
-    page: Page,
-    target: TargetSpec,
-    step: Step,
-    timeoutMs: number,
-    log: (message: string) => void | Promise<void>
-  ): Promise<Locator> {
-    try {
-      return await resolveTarget(page, target, { timeoutMs, log });
-    } catch (e) {
-      const mode = this.healModeFor(target, step);
-      if (mode === 'off') throw e;
-      if (this.retryRemaining > 0) {
-        await this.log('info', `heal skipped: ${this.retryRemaining} retry attempt(s) still ahead`);
-        throw e;
-      }
-
-      const outcome = await healTarget(page, target, {
-        ...(target.healThreshold !== undefined ? { threshold: target.healThreshold } : {})
-      });
-      if (!outcome) {
-        await this.log('info', 'heal: no candidate reached the healing threshold — nothing to suggest');
-        throw e;
-      }
-
-      this.heals.push({
-        step: this.currentLabel,
-        mode,
-        applied: mode === 'auto',
-        from: describeTarget(target),
-        to: outcome.target,
-        method: outcome.method,
-        score: Number(outcome.score.toFixed(2))
-      });
-
-      if (mode === 'auto') {
-        await this.log('warn', `target healed after every method failed — ${outcome.detail}`);
-        return outcome.locator;
-      }
-      await this.log('warn', `heal suggestion for step ${this.currentLabel}: ${outcome.detail} (set "heal": "auto" on the step to apply it)`);
-      throw new Error(`${(e as Error).message}\nheal suggestion: ${JSON.stringify(outcome.target)} (${outcome.method}, score ${outcome.score.toFixed(2)})`);
-    }
-  }
-
-  private healModeFor(target: TargetSpec, step: Step): HealMode {
-    // The engine's flag is a cap: a step may ask for less healing than the run allows, never more
-    // (`off` at the engine level therefore disables healing everywhere). Steps that declare nothing
-    // take the cap, and without a flag the default is `recommend`.
-    const rank: Record<HealMode, number> = { off: 0, recommend: 1, auto: 2 };
-    const declared = [target.heal, step.heal].find(
-      (value): value is HealMode => value === 'off' || value === 'recommend' || value === 'auto'
-    );
-    const flag = this.options.heal;
-    const wanted: HealMode = declared ?? flag ?? 'recommend';
-    if (flag === undefined) return wanted;
-    return rank[wanted] <= rank[flag] ? wanted : flag;
-  }
-
-  /**
-   * Post-action verification: after the action, wait for a target to appear. An action "succeeding"
-   * is not the same as the app having reacted — this is the check that proves it did.
-   */
-  private async verifyAfter(page: Page, step: Step, defaultTimeoutMs: number): Promise<void> {
-    const verify = step.verify ?? {};
-    const timeout = this.duration(verify.timeoutMs, defaultTimeoutMs, 300000);
-    const spec = verify.target
-      ?? targetFromStep({
-        type: 'web',
-        ...(verify.selector ? { selector: verify.selector } : {}),
-        ...(verify.selectors ? { selectors: verify.selectors } : {})
-      } as Step);
-    if (!spec) throw new Error('verify needs a target or a selector.');
-    const locator = await resolveTarget(page, spec, {
-      timeoutMs: timeout,
-      log: (message) => { void this.log('info', `verify: ${message}`); }
-    });
-    await locator.waitFor({ state: verify.state ?? 'visible', timeout });
-    await this.log('info', `verified after ${String(step.action)}: ${describeTarget(spec)}`);
-  }
-
-  /**
-   * Header-keyed rows from a table's cell grid. `headerRow: false` keys the columns by their index
-   * instead; a duplicate header name gets a numeric suffix so no column is silently dropped.
-   */
-  private tableRows(grid: string[][], headerRow: boolean): Array<Record<string, string>> {
-    if (grid.length === 0) return [];
-    const header = headerRow ? grid[0]! : (grid[0] ?? []).map((_, index) => String(index));
-    const body = headerRow ? grid.slice(1) : grid;
-    const keys: string[] = [];
-    for (const [index, cell] of header.entries()) {
-      const base = cell.trim() !== '' ? cell.trim() : `Column${index + 1}`;
-      let key = base;
-      for (let n = 2; keys.includes(key); n++) key = `${base}_${n}`;
-      keys.push(key);
-    }
-    return body.map((cells) => Object.fromEntries(keys.map((key, index) => [key, cells[index] ?? ''])));
-  }
-
-  private async elementExists(step: Step): Promise<boolean> {
-    const page = await this.pageFor();
-    const target = targetFromStep(step);
-    if (!target) return false;
-    try {
-      await resolveTarget(page, target, { timeoutMs: this.duration(step.timeoutMs, 2000, 30000), log: () => {}, immediate: true });
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -1174,7 +902,6 @@ export class Engine {
   // ── API / OCR / AI vision ─────────────────────────────────────────────────────────────────────
 
   private async runApi(step: Step): Promise<void> {
-    if (normalizeAction(step.action, 'api') === 'load') return this.runApiLoad(step);
     const url = this.interp(String(step.url ?? ''));
     if (!url) throw new Error('api.request needs a "url".');
     const method = String(step.method ?? 'GET').toUpperCase();
@@ -1191,222 +918,8 @@ export class Engine {
     await this.log('info', `API ${method} ${url} → ${response.status}`);
   }
 
-  /**
-   * `api.load` — a smoke-shaped load check, deliberately small: VUs × iterations (a duration also
-   * caps it), latency percentiles, error rate. It is not a load-testing platform; it answers "does
-   * this endpoint hold up before the bot leans on it", from inside a workflow, with real numbers.
-   * A non-2xx never throws here — it is counted, because that is the measurement.
-   */
-  private async runApiLoad(step: Step): Promise<void> {
-    const url = this.interp(String(step.url ?? ''));
-    if (!url) throw new Error('api.load needs a "url".');
-    const method = String(step.method ?? 'GET').toUpperCase();
-    const vus = Math.min(Math.max(Math.floor(Number(step.vus) || 1), 1), 50);
-    let iterations = Math.max(Math.floor(Number(step.iterations) || 0), 0);
-    const durationMs = Math.max(Math.floor(Number(step.durationMs) || 0), 0);
-    if (iterations === 0 && durationMs === 0) iterations = 10;
 
-    const init: RequestInit = { method };
-    if (step.headers) init.headers = step.headers as Record<string, string>;
-    if (step.body !== undefined) init.body = typeof step.body === 'string' ? this.interp(step.body) : JSON.stringify(step.body);
 
-    const timeoutMs = this.duration(step.timeoutMs, 30000, 300000);
-    const expect = Number.isFinite(Number(step.expectStatus)) ? Number(step.expectStatus) : undefined;
-
-    let issued = 0;
-    let errors = 0;
-    const latencies: number[] = [];
-    const startedAt = Date.now();
-    const deadline = durationMs > 0 ? startedAt + durationMs : Number.POSITIVE_INFINITY;
-
-    const worker = async (): Promise<void> => {
-      for (;;) {
-        if (iterations > 0 && issued >= iterations) return;
-        if (durationMs > 0 && Date.now() >= deadline) return;
-        issued++;
-        const requestStarted = Date.now();
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), timeoutMs);
-          try {
-            const response = await fetch(url, { ...init, signal: controller.signal });
-            await response.arrayBuffer(); // consume the body: a stream nobody reads is not a finished request
-            if (expect !== undefined && response.status !== expect) errors++;
-          } finally {
-            clearTimeout(timer);
-          }
-        } catch {
-          errors++;
-        }
-        latencies.push(Date.now() - requestStarted);
-      }
-    };
-    await Promise.all(Array.from({ length: vus }, () => worker()));
-
-    const elapsedMs = Math.max(Date.now() - startedAt, 1);
-    latencies.sort((a, b) => a - b);
-    const percentile = (p: number): number => {
-      if (latencies.length === 0) return 0;
-      const index = Math.min(latencies.length - 1, Math.max(0, Math.ceil((p / 100) * latencies.length) - 1));
-      return latencies[index]!;
-    };
-    const stats = {
-      url,
-      method,
-      vus,
-      requested: issued,
-      errors,
-      durationMs: elapsedMs,
-      rps: Number((issued / (elapsedMs / 1000)).toFixed(1)),
-      latencyMs: {
-        min: latencies[0] ?? 0,
-        avg: latencies.length > 0 ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : 0,
-        p50: percentile(50),
-        p95: percentile(95),
-        p99: percentile(99),
-        max: latencies[latencies.length - 1] ?? 0
-      }
-    };
-    const name = String(step.saveAs ?? 'load');
-    this.vars[name] = JSON.stringify(stats);
-    this.vars[`${name}.p95`] = String(stats.latencyMs.p95);
-    this.vars[`${name}.errors`] = String(errors);
-    await this.log(
-      'info',
-      `api.load ${method} ${url} → ${issued} request(s) in ${elapsedMs} ms (${stats.rps} rps), p50 ${stats.latencyMs.p50} ms, p95 ${stats.latencyMs.p95} ms, ${errors} error(s)`
-    );
-  }
-
-  // ── Mobile (raw WebDriver → Appium, Selenium, chromedriver) ────────────────────────────────────
-
-  private async runMobile(step: Step): Promise<void> {
-    switch (normalizeAction(step.action, 'mobile')) {
-      case 'session': {
-        const server = this.interp(String(step.server ?? '')) || 'http://127.0.0.1:4723';
-        const capabilities = (step.capabilities ?? {}) as Record<string, unknown>;
-        const driver = String(step.driver ?? 'raw');
-        const client = driver === 'webdriverio'
-          ? await startWebdriverIo({ server, capabilities })
-          : await WebDriverClient.start({
-            server,
-            capabilities,
-            timeoutMs: this.duration(step.timeoutMs, 60000, 600000)
-          });
-        this.webdriver = client;
-        if (step.saveAs) this.vars[String(step.saveAs)] = client.id ?? '';
-        await this.log('info', `mobile.session ${server} via ${driver} → ${client.id} (${String(capabilities['platformName'] ?? '?')})`);
-        break;
-      }
-      case 'end': {
-        if (!this.webdriver) throw new Error('mobile.end: no session is open.');
-        await this.webdriver.end();
-        this.webdriver = undefined;
-        await this.log('info', 'mobile.end → session closed');
-        break;
-      }
-      case 'tap': {
-        const client = this.mobileSession();
-        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
-        await client.click(element);
-        await this.log('info', `mobile.tap ${String(step.using)}=${this.interp(String(step.value))} → ok`);
-        break;
-      }
-      case 'type': {
-        const client = this.mobileSession();
-        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
-        if (step.clear !== false) await client.clear(element);
-        const text = this.interp(String(step.text ?? ''));
-        await client.type(element, text);
-        await this.log('info', `mobile.type ${String(step.using)}=${this.interp(String(step.value))} ← ${text.length} char(s)`);
-        break;
-      }
-      case 'getText': {
-        const client = this.mobileSession();
-        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
-        const text = await client.text(element);
-        await this.save(step, text, `mobile.getText ${String(step.using)}=${this.interp(String(step.value))} → "${text.slice(0, 60)}"`);
-        break;
-      }
-      case 'waitFor': {
-        const client = this.mobileSession();
-        const using = this.interp(String(step.using));
-        const value = this.interp(String(step.value));
-        const timeout = this.duration(step.timeoutMs, 10000, 300000);
-        const wantVisible = step.state !== 'exists';
-        const deadline = Date.now() + timeout;
-        let found = false;
-        let lastError = '';
-        while (Date.now() <= deadline) {
-          try {
-            const element = await client.find(using, value);
-            if (!wantVisible || (await client.displayed(element))) { found = true; break; }
-          } catch (e) {
-            lastError = (e as Error).message;
-          }
-          await new Promise<void>((resolve) => setTimeout(resolve, 300));
-        }
-        if (!found) {
-          throw new Error(`mobile.waitFor ${using}=${value} → not found within ${timeout}ms${lastError ? ` (${lastError.slice(0, 120)})` : ''}`);
-        }
-        await this.log('info', `mobile.waitFor ${using}=${value} → ok`);
-        break;
-      }
-      case 'swipe': {
-        const client = this.mobileSession();
-        const rect = await client.windowRect();
-        const width = rect.width || 1080;
-        const height = rect.height || 1920;
-        const distance = Math.min(
-          Math.max(Math.floor(Number(step.distance) || Math.round(Math.min(width, height) * 0.5)), 50),
-          Math.max(width, height)
-        );
-        const duration = this.duration(step.durationMs, 500, 5000);
-        const center = { x: Math.round(width / 2), y: Math.round(height / 2) };
-        const start = { ...center };
-        const end = { ...center };
-        const direction = String(step.direction);
-        const half = Math.round(distance / 2);
-        if (direction === 'left') { start.x = center.x + half; end.x = center.x - half; }
-        if (direction === 'right') { start.x = center.x - half; end.x = center.x + half; }
-        if (direction === 'up') { start.y = center.y + half; end.y = center.y - half; }
-        if (direction === 'down') { start.y = center.y - half; end.y = center.y + half; }
-        await client.actions([
-          {
-            type: 'pointer',
-            id: 'finger1',
-            parameters: { pointerType: 'touch' },
-            actions: [
-              { type: 'pointerMove', duration: 0, x: Math.round(start.x), y: Math.round(start.y) },
-              { type: 'pointerDown', button: 0 },
-              { type: 'pointerMove', duration, x: Math.round(end.x), y: Math.round(end.y) },
-              { type: 'pointerUp', button: 0 }
-            ]
-          }
-        ]);
-        await this.log('info', `mobile.swipe ${direction} ${distance}px in ${duration}ms (screen ${width}x${height})`);
-        break;
-      }
-      case 'screenshot': {
-        const client = this.mobileSession();
-        const base64 = await client.screenshot();
-        const declared = this.interp(String(step.path ?? ''));
-        const file = declared !== ''
-          ? path.resolve(this.projectDir, declared)
-          : await this.defaultScreenshot(`mobile-${this.stepsRun + 1}`);
-        await mkdir(path.dirname(file), { recursive: true });
-        await writeFile(file, Buffer.from(base64, 'base64'));
-        await this.log('info', `mobile screenshot saved to ${file}`);
-        break;
-      }
-      default:
-        throw new Error(`Unknown mobile action: ${step.action}`);
-    }
-  }
-
-  private mobileSession(): MobileDriver {
-    if (!this.webdriver) throw new Error('mobile: no session is open — add a mobile.session step first.');
-    return this.webdriver;
-  }
 
   // ── Word (.docx over the stdlib zip + XML) ─────────────────────────────────────────────────────
 
@@ -1443,19 +956,21 @@ export class Engine {
   }
 
   /**
-   * ai-vision: screenshot → the project's own OpenAI-compatible endpoint → one action. The endpoint
-   * travels with the job when an orchestrator dispatches it (there is no host credential), and the
-   * screenshot never leaves the machine until this call.
+   * ai-vision: screenshot the desktop → the project's own OpenAI-compatible endpoint → one action
+   * on the screen. The endpoint travels with the job when an orchestrator dispatches it (there is
+   * no host credential), and the screenshot never leaves the machine until this call.
    */
   private async runAiVision(step: Step): Promise<void> {
-    const page = await this.pageFor();
+    const backend = await this.desktopBackend(step);
     const baseUrl = String(step.aiBaseUrl ?? this.options.variables?.aiBaseUrl ?? '');
     const model = String(step.aiModel ?? this.options.variables?.aiModel ?? '');
     const apiKey = String(step.aiApiKey ?? this.options.variables?.aiApiKey ?? '');
     if (!baseUrl || !model) throw new Error('ai-vision needs the project AI endpoint (aiBaseUrl/aiModel) — a robot gets them with the job.');
 
     const goal = this.interp(String(step.goal ?? ''));
-    const screenshot = (await page.screenshot()).toString('base64');
+    requireCapability(backend, 'capture', 'ai-vision.decide');
+    const screenshotPath = await backend.capture(await this.defaultScreenshot(`ai-vision-${this.stepsRun + 1}`));
+    const screenshot = (await readFile(screenshotPath)).toString('base64');
     const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
@@ -1465,7 +980,8 @@ export class Engine {
         messages: [
           {
             role: 'system',
-            content: 'You drive a web browser. Answer with one JSON object: {"action":"click"|"type"|"done","selector":"<css>","text":"...","reason":"..."}'
+            content: 'You look at a desktop screenshot. Answer with one JSON object: '
+              + '{"action":"click"|"type"|"done","x":<screen x>,"y":<screen y>,"text":"...","reason":"..."}'
           },
           { role: 'user', content: [{ type: 'text', text: goal }, { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot}` } }] }
         ]
@@ -1475,99 +991,221 @@ export class Engine {
     const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = payload.choices?.[0]?.message?.content ?? '';
     const decision = JSON.parse(content.replace(/^```(?:json)?|```$/g, '').trim()) as {
-      action?: string; selector?: string; text?: string; reason?: string;
+      action?: string; x?: number; y?: number; text?: string; reason?: string;
     };
-    await this.log('info', `AI decided: ${decision.action} ${decision.selector ?? ''} (${decision.reason ?? ''})`);
-    if (decision.action === 'click' && decision.selector) await page.click(decision.selector);
-    else if (decision.action === 'type' && decision.selector) await page.fill(decision.selector, decision.text ?? '');
+    const where = decision.x !== undefined && decision.y !== undefined ? ` ${decision.x},${decision.y}` : '';
+    await this.log('info', `AI decided: ${String(decision.action)}${where} (${decision.reason ?? ''})`);
+    if (decision.action === 'click') {
+      requireCapability(backend, 'click', 'ai-vision.decide (click)');
+      if (!Number.isFinite(Number(decision.x)) || !Number.isFinite(Number(decision.y))) {
+        throw new Error('ai-vision decided "click" without screen coordinates (x/y).');
+      }
+      await backend.click('left', { x: Number(decision.x), y: Number(decision.y) });
+    } else if (decision.action === 'type') {
+      requireCapability(backend, 'keyboard', 'ai-vision.decide (type)');
+      await backend.type(String(decision.text ?? ''));
+    }
+    if (step.saveAs) this.vars[String(step.saveAs)] = JSON.stringify(decision);
   }
 
   // ── Desktop ───────────────────────────────────────────────────────────────────────────────────
 
-  private async runDesktop(step: Step): Promise<void> {
-    const nut = await this.loadOptional<any>('@nut-tree-fork/nut-js', 'Install it with `npm i @nut-tree-fork/nut-js` (and a GUI session to drive).');
-    const { mouse, keyboard, screen, clipboard, Point, Button, Key } = nut;
-    const at = (name: 'x' | 'y'): number => {
-      const value = Number(step[name]);
-      if (!Number.isFinite(value)) throw new Error(`desktop.${String(step.action)} needs a numeric "${name}"`);
-      return value;
-    };
+  /** The backend this run drives the desktop with: probed once, logged once, reused. */
+  private async desktopBackend(step: Step): Promise<DesktopBackend> {
+    if (this.desktop) return this.desktop;
+    const choice = await selectBackend(typeof step.backend === 'string' ? step.backend : undefined);
+    if (!choice.backend) {
+      const reasons = choice.rejected.map(entry => `${entry.name}: ${entry.reason}`).join('; ');
+      throw new Error(`no desktop backend answers on this host — ${reasons}`);
+    }
+    this.desktop = choice.backend;
+    if (!this.desktopLogged) {
+      this.desktopLogged = true;
+      await this.log('info', `desktop backend: ${choice.backend.name} — ${choice.backend.detail}`);
+      for (const rejected of choice.rejected) {
+        await this.log('info', `desktop backend ${rejected.name} skipped: ${rejected.reason}`);
+      }
+    }
+    return this.desktop;
+  }
 
-    switch (normalizeAction(step.action, 'desktop')) {
-      case 'move':
-        await mouse.setPosition(new Point(at('x'), at('y')));
+  /** The healing a step asks for: its own, its target's, or the run's cap. */
+  private healMode(spec: TargetSpec | null): HealMode {
+    const asked = this.currentStep?.heal as HealMode | undefined;
+    return asked ?? spec?.heal ?? this.options.heal ?? 'recommend';
+  }
+
+  /**
+   * Where a desktop step acts: an explicit x/y pair, or the target resolved through the four
+   * methods — with healing applied when nothing matches. Returns undefined when the step names
+   * neither, which is how "click wherever the pointer is" stays expressible.
+   */
+  private async resolveStepPoint(step: Step, backend: DesktopBackend, what: string): Promise<{ x: number; y: number } | undefined> {
+    const x = Number(step.x);
+    const y = Number(step.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+
+    const spec = targetFromStep(step);
+    if (!spec) return undefined;
+    try {
+      const resolved = await resolveTarget(backend, spec, {
+        timeoutMs: this.duration(step.timeoutMs, 10000, 120000),
+        log: (message) => { void this.log('info', `target: ${message}`); }
+      });
+      await this.log('info', `target resolved: ${resolved.description}`);
+      return resolved.point;
+    } catch (error) {
+      const mode = this.healMode(spec);
+      if (mode === 'off') throw error;
+      const outcome = await healTarget(backend, spec, {
+        ...(spec.healThreshold !== undefined ? { threshold: spec.healThreshold } : {}),
+        log: (message) => { void this.log('info', `heal: ${message}`); }
+      });
+      if (!outcome) throw error;
+      const applied = mode === 'auto';
+      this.heals.push({
+        step: this.currentLabel || what,
+        mode,
+        applied,
+        from: describeTarget(spec),
+        to: outcome.target,
+        method: outcome.method,
+        score: outcome.score
+      });
+      await this.log(
+        applied ? 'warn' : 'info',
+        `target healed (${outcome.method}, ${outcome.score.toFixed(2)}): ${outcome.detail}${applied ? '' : ' — not applied'}`
+      );
+      if (!applied) throw new Error(`${(error as Error).message} — a healed candidate exists: ${outcome.detail}`);
+      return outcome.point;
+    }
+  }
+
+  /**
+   * Post-action verification: the action returning is not proof the application reacted. This waits
+   * for the target to be findable, up to `verify.timeoutMs`, with the same four methods.
+   */
+  private async verifyDesktop(step: Step): Promise<void> {
+    const verify = step.verify ?? {};
+    const spec = verify.target ?? targetFromStep(step);
+    if (!spec) throw new Error('verify needs a target or a selector.');
+    const backend = await this.desktopBackend(step);
+    const timeoutMs = this.duration(verify.timeoutMs, 5000, 300000);
+    const deadline = Date.now() + timeoutMs;
+    let last: Error | undefined;
+    for (;;) {
+      try {
+        const found = await resolveTarget(backend, spec, { timeoutMs: Math.max(500, deadline - Date.now()) });
+        await this.log('info', `verified after ${String(step.action)}: ${found.description}`);
+        return;
+      } catch (error) {
+        last = error as Error;
+        if (Date.now() >= deadline) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    throw new Error(`verify: ${last?.message ?? 'the target did not reappear'}`);
+  }
+
+  /**
+   * `desktop.uia` drives the Windows accessibility API through PowerShell: it needs no backend and
+   * no display library, so it is answered before a backend is picked, and refuses off Windows with
+   * the sentence that says so.
+   */
+  private async runDesktopUia(step: Step): Promise<void> {
+    const verb = String(step.uiaAction ?? 'invoke').toLowerCase();
+    const output = await runUia({
+      ...(step.name ? { name: this.interp(String(step.name)) } : {}),
+      ...(step.automationId ? { automationId: this.interp(String(step.automationId)) } : {}),
+      ...(step.controlType ? { controlType: this.interp(String(step.controlType)) } : {}),
+      action: verb === 'setvalue' ? 'setValue' : verb === 'gettext' ? 'getText' : verb === 'focus' ? 'focus' : 'invoke',
+      ...(step.value !== undefined ? { value: this.interp(String(step.value)) } : {})
+    }, this.duration(step.timeoutMs, 15000, 120000));
+    if (step.saveAs) this.vars[String(step.saveAs)] = output;
+    await this.log('info', `desktop.uia ${verb} → ${output.slice(0, 120)}`);
+  }
+
+  private async runDesktop(step: Step): Promise<void> {
+    const action = normalizeAction(step.action, 'desktop');
+    if (action === 'uia') return this.runDesktopUia(step);
+    const backend = await this.desktopBackend(step);
+    switch (action) {
+      case 'move': {
+        requireCapability(backend, 'move', 'desktop.move');
+        const to = await this.resolveStepPoint(step, backend, 'desktop.move');
+        if (!to) throw new Error('desktop.move needs an x/y pair or a target.');
+        await backend.move(to.x, to.y);
         break;
+      }
       case 'click':
-        await mouse.click(Button.LEFT);
-        break;
       case 'doubleClick':
-        await mouse.doubleClick(Button.LEFT);
+      case 'rightClick': {
+        requireCapability(backend, 'click', `desktop.${action}`);
+        const button = action === 'rightClick' ? 'right' as const : 'left' as const;
+        const where = await this.resolveStepPoint(step, backend, `desktop.${action}`);
+        if (action === 'doubleClick') await backend.doubleClick(button, where);
+        else await backend.click(button, where);
         break;
-      case 'rightClick':
-        await mouse.click(Button.RIGHT);
-        break;
+      }
       case 'type':
-        await keyboard.type(this.interp(step.text));
+        requireCapability(backend, 'keyboard', 'desktop.type');
+        await backend.type(this.interp(step.text));
         break;
       case 'scroll': {
+        requireCapability(backend, 'scroll', 'desktop.scroll');
         const direction = String(step.direction ?? 'down').toLowerCase();
-        const amount = Number(step.amount ?? 5) || 5;
-        if (direction === 'up') await mouse.scrollUp(amount);
-        else if (direction === 'left') await mouse.scrollLeft(amount);
-        else if (direction === 'right') await mouse.scrollRight(amount);
-        else if (direction === 'down') await mouse.scrollDown(amount);
-        else throw new Error(`desktop.scroll direction must be up|down|left|right, got "${direction}"`);
+        if (!['up', 'down', 'left', 'right'].includes(direction)) {
+          throw new Error(`desktop.scroll direction must be up|down|left|right, got "${direction}"`);
+        }
+        await backend.scroll(direction as 'up' | 'down' | 'left' | 'right', Number(step.amount ?? 5) || 5);
         break;
       }
       case 'pressKey': {
-        const names = (Array.isArray(step.keys) ? step.keys : [step.key]).map(String);
-        if (names.length === 0 || names.some((name) => Key[name] === undefined)) {
-          throw new Error(`desktop.pressKey needs valid Key names, got ${JSON.stringify(step.keys ?? step.key)}`);
+        requireCapability(backend, 'keyboard', 'desktop.pressKey');
+        const names = (Array.isArray(step.keys) ? step.keys : [step.key]).map(String).filter(name => name.trim() !== '');
+        if (names.length === 0) {
+          throw new Error(`desktop.pressKey needs valid key names, got ${JSON.stringify(step.keys ?? step.key)}`);
         }
-        await keyboard.pressKey(...names.map((name) => Key[name]));
+        await backend.pressKey(names);
         break;
       }
       case 'drag': {
-        const from = step.from as { x?: unknown; y?: unknown } | undefined;
-        const start = from ? new Point(Number(from.x), Number(from.y)) : await mouse.getPosition();
-        await mouse.drag([start, new Point(at('x'), at('y'))]);
+        requireCapability(backend, 'move', 'desktop.drag');
+        const to = await this.resolveStepPoint(step, backend, 'desktop.drag');
+        if (!to) throw new Error('desktop.drag needs an x/y pair or a target to drag to.');
+        const from = step.from && typeof step.from === 'object'
+          ? { x: Number((step.from as { x?: unknown }).x), y: Number((step.from as { y?: unknown }).y) }
+          : await backend.position();
+        await backend.drag(from, to);
         break;
       }
       case 'clipboardCopy':
-        await clipboard.setContent(this.interp(step.text));
+        requireCapability(backend, 'clipboard', 'desktop.clipboardCopy');
+        await backend.clipboardWrite!(this.interp(step.text));
         break;
       case 'screenshot': {
-        const file = await screen.capture(String(step.fileName ?? `desktop-${this.stepsRun + 1}`), undefined, this.interp(String(step.path ?? '')) || undefined);
+        requireCapability(backend, 'capture', 'desktop.screenshot');
+        const file = await backend.capture(await this.screenshotTarget(step));
         await this.log('info', `desktop screenshot saved to ${file}`);
         break;
       }
       case 'waitForImage':
       case 'clickImage': {
-        const imagePath = this.interp(String(step.imagePath ?? ''));
+        requireCapability(backend, 'image', `desktop.${action}`);
+        const declared = targetFromStep(step);
+        const imagePath = this.interp(String(step.imagePath ?? '')) || declared?.image?.path || '';
         if (!imagePath) throw new Error(`desktop.${String(step.action)} needs an "imagePath".`);
         const timeoutMs = this.duration(step.timeoutMs, 10000, 120000);
-        const params = step.confidence !== undefined ? { confidence: Number(step.confidence) } : undefined;
-        const region = await screen.waitFor(imagePath, timeoutMs, undefined, params);
-        await this.log('info', `image found at ${region.left},${region.top} (${region.width}x${region.height})`);
-        if (normalizeAction(step.action, 'desktop') === 'clickImage') {
-          await mouse.setPosition(new Point(region.left + region.width / 2, region.top + region.height / 2));
-          await mouse.click(Button.LEFT);
+        const threshold = step.confidence !== undefined ? Number(step.confidence) : declared?.image?.threshold;
+        const box = await backend.findImage(imagePath, {
+          ...(threshold !== undefined ? { threshold } : {}),
+          timeoutMs
+        });
+        await this.log('info', `image found at ${box.left},${box.top} (${box.width}x${box.height})`);
+        if (action === 'clickImage') {
+          requireCapability(backend, 'click', 'desktop.clickImage');
+          await backend.click('left', { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) });
         }
-        break;
-      }
-      case 'uia': {
-        // Windows UI Automation through PowerShell — the honest cross-platform answer for the
-        // native-driver family: available on Windows, a clear refusal everywhere else.
-        const verb = String(step.uiaAction ?? 'invoke').toLowerCase();
-        const output = await runUia({
-          ...(step.name ? { name: this.interp(String(step.name)) } : {}),
-          ...(step.automationId ? { automationId: this.interp(String(step.automationId)) } : {}),
-          ...(step.controlType ? { controlType: this.interp(String(step.controlType)) } : {}),
-          action: verb === 'setvalue' ? 'setValue' : verb === 'gettext' ? 'getText' : verb === 'focus' ? 'focus' : 'invoke',
-          ...(step.value !== undefined ? { value: this.interp(String(step.value)) } : {})
-        }, this.duration(step.timeoutMs, 15000, 120000));
-        if (step.saveAs) this.vars[String(step.saveAs)] = output;
-        await this.log('info', `desktop.uia ${verb} → ${output.slice(0, 120)}`);
         break;
       }
       default:
@@ -1590,6 +1228,20 @@ export class Engine {
     const ms = Number(value);
     if (!Number.isFinite(ms)) return fallbackMs;
     return Math.min(Math.max(Math.floor(ms), 0), maxMs);
+  }
+
+  /**
+   * Where `desktop.screenshot` writes: `path` is a folder (project-relative, created if missing) and
+   * `fileName` the name inside it — the shape a ported screenshot step uses. Without a folder the
+   * run folder takes it.
+   */
+  private async screenshotTarget(step: Step): Promise<string> {
+    const name = this.interp(String(step.fileName ?? '')).trim().replace(/\.png$/i, '') || `desktop-${this.stepsRun + 1}`;
+    const folder = this.interp(String(step.path ?? '')).trim();
+    if (!folder) return this.defaultScreenshot(name);
+    const dir = path.resolve(this.projectDir, folder);
+    await mkdir(dir, { recursive: true });
+    return path.join(dir, `${name}.png`);
   }
 
   private async defaultScreenshot(name: string): Promise<string> {
@@ -1631,4 +1283,3 @@ function truthy(value: string): boolean {
   return v !== '' && v !== 'false' && v !== '0' && v !== 'null' && v !== 'undefined';
 }
 
-export { describeTarget };

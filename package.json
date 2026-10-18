@@ -1,9 +1,9 @@
 {
-  "name": "rpa-testing",
+  "name": "nutjs-testing",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "rpa-testing — a personal RPA toolkit: JSON workflows, a step engine, a local Studio UI, and a robot client for an orchestrator.",
+  "description": "nutjs-testing — a desktop automation toolkit: JSON workflows, a step engine that drives the real screen through pluggable backends, a local Studio, and a robot client for an orchestrator.",
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"
@@ -23,11 +23,9 @@
     "test:runners": "npm run test:jest && npm run test:vitest",
     "test:all": "npm test && npm run test:runners"
   },
-  "dependencies": {
-    "playwright": "^1.64.1"
-  },
   "devDependencies": {
     "@babel/core": "^8.0.7",
+    "playwright": "^1.64.1",
     "@babel/preset-typescript": "^8.0.7",
     "@types/node": "^24.19.2",
     "babel-jest": "^30.5.2",
@@ -37,8 +35,8 @@
     "vitest": "^5.0.5"
   },
   "optionalDependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
     "imapflow": "^2.5.2",
-    "nodemailer": "^10.1.2",
-    "webdriverio": "^10.0.2"
+    "nodemailer": "^10.1.2"
   }
 }

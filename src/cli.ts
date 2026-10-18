@@ -14,6 +14,7 @@ import { Engine, formatLogLine } from './engine.js';
 import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS } from './model.js';
 import { AroRobot } from './robot/aro.js';
 import { packProject, unpack } from './pack.js';
+import { importExport } from './import.js';
 import { QueueStore } from './store.js';
 import { scaffoldBasic, scaffoldTransactional } from './templates.js';
 import { answerHuman, pendingHuman } from './gaps.js';
@@ -187,6 +188,22 @@ async function main(): Promise<number> {
       } finally {
         if (cleanup) await cleanup();
       }
+    }
+
+    case 'import': {
+      const input = positional[0];
+      const out = values(flags, 'out')[0];
+      if (!input || !out) {
+        console.error('rpa import <file.xaml|project.json> --out <dir>');
+        return 2;
+      }
+      const result = await importExport(input, out);
+      for (const file of result.files) {
+        console.log(`${path.relative(process.cwd(), file.output)}  ← ${path.basename(file.source)} (${file.steps} step(s))`);
+      }
+      const unmapped = result.report.reduce((sum, report) => sum + report.unmapped.length, 0);
+      console.log(`${result.files.length} workflow(s) written to ${result.outDir}; ${unmapped} unmapped activit${unmapped === 1 ? 'y' : 'ies'} — see ${path.relative(process.cwd(), result.reportFile)}`);
+      return 0;
     }
 
     case 'pack': {

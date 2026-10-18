@@ -184,6 +184,42 @@ A file that changed after packing is refused by name (`Main.json does not match 
 is what the hashes are for. There is no signing: the manifest proves a package is intact, not who
 built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 
+## Importing a legacy export
+
+`rpa import <file.xaml|project.json> --out <dir>` reads a legacy desktop-automation export and writes
+this tool's JSON beside a `PORTING-REPORT.md`. The engine stays JSON — this is a converter at the
+edge, not a second runtime.
+
+```bash
+rpa import LegacyBot/project.json --out bot
+cd bot && npm --prefix .. run rpa -- run Dispatcher.json
+```
+
+| Converted | Becomes |
+|---|---|
+| `Sequence`, `Flowchart`, `StateMachine` | flattened into their steps (a state machine gets a note) |
+| `If`, `While`, `ForEach` | `control.if` / `while` / `foreach` |
+| `TryCatch` / `Throw` | `control.try` (a business-rule exception type → the `business` catch) |
+| `RetryScope`, `Delay`, `Assign`, `MultipleAssign` | `control.retryScope`, `delay`, `setVar`, `math` |
+| `LogMessage`, `InvokeWorkflowFile`, `InputDialog` | `control.log`, `invoke`, `hitl.ask` |
+| `Click`, `TypeInto`, `GetText` and an application-scope container | `web.click` / `type` / `getText`; a scope's URL becomes `web.goto` |
+| `AddQueueItem`, `GetTransactionItem`, `SetTransactionStatus` | `queue.addItem` / `getTransactionItem` / `setStatus` |
+| `ReadRange`, `WriteRange`, `WriteCell`, `ForEachRow` | `excel.*` (the loop keeps the sheet it was read from) |
+| `ForEachFileX`, `MoveFile`, `ReadPDFText` | `file.forEachFile`, `file.move`, `pdf.readText` |
+| `Matches`, `DeserializeJson` | `data.regexMatches`, `data.jsonParse` |
+
+Selector strings are routed through `parseSelectorChain`, so a recorded chain arrives as a target
+this engine resolves. Expressions are translated only where the meaning is unambiguous
+(`Config("Queue")` → `${Config.Queue}`, `RetryNumber + 1` → `control.math`); everything else — an
+unknown activity, an untranslatable expression, a scope that does not exist here — lands in the
+report with its source line:
+
+```md
+| Line | Activity | What happened |
+|---|---|---|
+| 7 | `ExcelApplicationScope` | no equivalent step — the container is gone, the steps inside it are kept |
+```
+
 ## Design notes
 
 | Concern | This tool |
@@ -212,6 +248,7 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/transaction-loop.test.ts` (the scaffolded template: business vs application exception paths),
 `test/selector-chain.test.ts` (selector-chain parsing, entry-point arguments, verify),
 `test/pack.test.ts` (pack → run from the archive; a tampered file refused),
+`test/import.test.ts` (a synthetic dispatcher/performer pair imported and run against the queue; the porting report),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
@@ -236,6 +273,7 @@ src/engine.ts       step execution, resilience, variables, logging
 src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
 src/templates.ts    project templates (basic, transactional)
 src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
+src/import.ts       the legacy-export importer (XAML → JSON + PORTING-REPORT.md)
 src/pack.ts         the package format (zip + manifest, node:zlib)
 src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA
 src/robot/aro.ts    the orchestrator protocol (robot side)

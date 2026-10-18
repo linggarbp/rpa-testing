@@ -37,10 +37,11 @@ npm run rpa -- run demo/Main.json --headed
 npm run rpa -- validate demo/Main.json
 ```
 
-`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab,
-served by one Node process. It works the same on Windows, Linux and macOS (`--no-open` on a headless
-host, `--port N` to move it). There is no bundler, no Electron and no build step — the page is three
-static files in `ui/`.
+`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab
+(add items, set a status) + a Human tab for pending `hitl.ask` questions, plus a **Pick element**
+button that runs the same code path as `rpa pick` and drops the step onto the canvas. It works the
+same on Windows, Linux and macOS (`--no-open` on a headless host, `--port N` to move it). There is no
+bundler, no Electron and no build step — the page is three static files in `ui/`.
 
 Run a workflow as a robot for an Aro orchestrator:
 
@@ -133,7 +134,8 @@ The log says which method actually matched (`target found by fuzzy selector (sco
 match(es))`), so a run that survived a changed page says so instead of pretending nothing moved.
 
 `rpa pick <url>` opens a browser, lets you click an element, and prints the target JSON to paste in
-— the "indicate element" workflow, without a designer.
+— the "indicate element" workflow, without a designer. The Studio's **Pick element** button calls the
+same code (`src/pick.ts`, `POST /api/pick { url }`) and appends the step where the canvas is pointing.
 
 ## Transactional loop template
 
@@ -250,16 +252,17 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/pack.test.ts` (pack → run from the archive; a tampered file refused),
 `test/import.test.ts` (a synthetic dispatcher/performer pair imported and run against the queue; the porting report),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
-`test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
+`test/ui.e2e.test.ts` (the Studio's API — including the Human tab answering a waiting `hitl.ask` — and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
 
 ### Verified
 
-- `npm test` — 80/80: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
+- `npm test` — 83/83: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
   suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice, the queue
-  against its own file store, a package against a tampered archive, and a legacy export against a
-  synthetic dispatcher/performer pair that is imported and then run (2 Successful + 1
-  BusinessException, asserted on the queue file).
+  against its own file store, a package against a tampered archive, a legacy export against a synthetic
+  dispatcher/performer pair that is imported and then run, the Studio's panels in a real browser (a
+  pending question answered, an item closed from its row, the pick button), and the pick code path
+  against a real chromium click.
 - Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
   (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
   a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s
@@ -276,6 +279,7 @@ src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
 src/templates.ts    project templates (basic, transactional)
 src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
 src/import.ts       the legacy-export importer (XAML → JSON + PORTING-REPORT.md)
+src/pick.ts         the pick code path (CLI verb and Studio button)
 src/pack.ts         the package format (zip + manifest, node:zlib)
 src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA
 src/robot/aro.ts    the orchestrator protocol (robot side)

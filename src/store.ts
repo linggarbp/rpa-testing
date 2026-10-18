@@ -40,6 +40,13 @@ export interface TransactionItem {
 /** Only the statuses a workflow may *set*; InProgress is the engine's own claim. */
 const SETTABLE: ReadonlySet<string> = new Set(['Successful', 'BusinessException', 'ApplicationException', 'Retry', 'Abandoned', 'New']);
 
+/** The exception type a closing status implies, when the caller does not name one. */
+function inferExceptionType(status: string): 'business' | 'application' | undefined {
+  if (status === 'BusinessException') return 'business';
+  if (status === 'ApplicationException') return 'application';
+  return undefined;
+}
+
 export class QueueStore {
   /** One process holds one workflow run, so a per-instance mutex is enough — no cross-process locking. */
   private locks = new Map<string, Promise<unknown>>();
@@ -140,8 +147,11 @@ export class QueueStore {
         item.status = status as TransactionStatus;
         if (reason) item.reason = reason;
         // A ProcessingException is recorded alongside the terminal status; keeping the same shape
-        // means a queue file stays readable by anything that knows the format.
-        if (exceptionType) item.processingException = { type: exceptionType, reason: reason ?? '' };
+        // means a queue file stays readable by anything that knows the format. The type is inferred
+        // from the status when the caller does not name one (BusinessException → business), so a
+        // status set by hand in the Studio records the same shape a performer's setStatus does.
+        const type = exceptionType ?? inferExceptionType(status);
+        if (type) item.processingException = { type, reason: reason ?? '' };
         if (analytics) item.analytics = analytics;
       }
       item.updatedUtc = new Date().toISOString();

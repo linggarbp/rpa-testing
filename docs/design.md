@@ -109,7 +109,11 @@ Ordered by what a personal tool notices first. Nothing here is blocked on Aro.
 | Legacy export import | closed: `rpa import <xaml\|project.json>` → JSON + `PORTING-REPORT.md` (unmapped activity + line). The runtime stays JSON | here |
 
 The Studio (`rpa ui`) shipped in this pass; a native shell (Electron/Tauri) would only wrap it, and
-the local web UI already runs on Windows, Linux and macOS without one.
+the local web UI already runs on Windows, Linux and macOS without one. It is a thin client over the
+same server: the canvas and palette edit the workflow, the console renders the run's own log lines
+(structured fields included), the queue tab adds items and sets a status, the Human tab lists pending
+`hitl.ask` requests and answers them, and **Pick element** calls `POST /api/pick` — which is the
+`rpa pick` code path, not a second implementation.
 
 ## Importing a legacy export
 

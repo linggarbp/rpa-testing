@@ -15,6 +15,7 @@ import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTI
 import { AroRobot } from './robot/aro.js';
 import { packProject, unpack } from './pack.js';
 import { importExport } from './import.js';
+import { pickTarget } from './pick.js';
 import { QueueStore } from './store.js';
 import { scaffoldBasic, scaffoldTransactional } from './templates.js';
 import { answerHuman, pendingHuman } from './gaps.js';
@@ -80,52 +81,6 @@ const HELP = `rpa-testing — a small, honest RPA toolkit
   rpa robot --api <url> --project <id> [--api-key <key> | --robot-id <id> --robot-key <key>]
             [--name <host>] [--capabilities web,desktop,ocr] [--mode Attended|Unattended] [--once]
 `;
-
-const PICK_SCRIPT = `(() => {
-  if (window.__rpaPickInstalled) return;
-  window.__rpaPickInstalled = true;
-
-  const cssPath = (element) => {
-    const escape = (value) => String(value).replace(/["\\\\]/g, '\\\\$&');
-    if (element.getAttribute && element.getAttribute('id')) return '#' + element.getAttribute('id');
-    if (element.getAttribute && element.getAttribute('name')) return element.tagName.toLowerCase() + '[name="' + escape(element.getAttribute('name')) + '"]';
-    const parts = [];
-    let node = element;
-    for (let depth = 0; node && node.nodeType === 1 && depth < 3; depth++) {
-      const tag = node.tagName.toLowerCase();
-      const parent = node.parentElement;
-      if (!parent) { parts.unshift(tag); break; }
-      const sameTag = Array.prototype.filter.call(parent.children, (child) => child.tagName === node.tagName);
-      parts.unshift(sameTag.length > 1 ? tag + ':nth-of-type(' + (sameTag.indexOf(node) + 1) + ')' : tag);
-      node = parent;
-    }
-    return parts.join(' > ');
-  };
-
-  document.addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const element = event.target;
-    if (!element || !element.tagName) return;
-    const tag = element.tagName.toUpperCase();
-    const ariaLabel = element.getAttribute ? (element.getAttribute('aria-label') || '') : '';
-    const text = (element.innerText || element.textContent || '').trim().slice(0, 60);
-    const aaname = ariaLabel || text;
-    const attributes = {};
-    const id = element.getAttribute ? element.getAttribute('id') : null;
-    const name = element.getAttribute ? element.getAttribute('name') : null;
-    if (id) attributes.id = id;
-    if (name) attributes.name = name;
-    if (aaname) attributes.aaname = aaname;
-    const levels = {};
-    Object.keys(attributes).forEach((key) => { levels[key] = key === 'aaname' ? 'fuzzy' : 'exact'; });
-    window.rpaPick({
-      strict: cssPath(element),
-      fuzzy: { tag: tag, attributes: attributes, levels: levels, threshold: 0.7 },
-      text: text
-    });
-  }, true);
-})();`;
 
 async function main(): Promise<number> {
   const { command, positional, flags } = parseArgs(process.argv.slice(2));
@@ -325,35 +280,20 @@ async function main(): Promise<number> {
         console.error('rpa pick needs a URL to open.');
         return 2;
       }
-      const { chromium } = await import('playwright');
-      const browser = await chromium.launch({ headless: false }); // clicking needs a human
-      const page = await browser.newPage();
-      let picked: unknown = null;
-      await page.exposeBinding('rpaPick', (_source, payload: unknown) => { picked = payload; });
-      // Injected as a STRING, not a function: a callback shipped to the page is serialised by the
-      // bundler with its names rewritten, and tsx's keepNames would leave a `__name` call inside it
-      // with no definition in the page. A string never goes through that transform.
-      await page.addInitScript({ content: PICK_SCRIPT });
-      await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
       console.log('Click the element you want to drive (Ctrl+C to give up)…');
-
-      const deadline = Date.now() + 5 * 60 * 1000;
-      while (!picked && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 200));
-      if (!picked) {
+      const step = await pickTarget(url, { timeoutMs: 5 * 60 * 1000 });
+      if (!step) {
         console.error('nothing was picked.');
-        await browser.close();
         return 1;
       }
 
-      const target = picked as Record<string, unknown>;
       const out = values(flags, 'out')[0];
-      const step = { type: 'web', action: values(flags, 'action')[0] ?? 'click', target };
+      const described = { ...step, action: values(flags, 'action')[0] ?? step.action };
       if (out) {
-        await writeFile(out, JSON.stringify(step, null, 2) + '\n');
+        await writeFile(out, JSON.stringify(described, null, 2) + '\n');
         console.log(`step written to ${out}`);
       }
-      console.log(JSON.stringify(step, null, 2));
-      await browser.close();
+      console.log(JSON.stringify(described, null, 2));
       return 0;
     }
 

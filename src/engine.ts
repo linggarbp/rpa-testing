@@ -19,6 +19,8 @@ import {
 } from './store.js';
 import { appendSheet, askHuman, readPdfText, readSheet, receiveMail, runUia, sendMail } from './gaps.js';
 import { describeTarget, healTarget, resolveTarget, targetFromStep } from './targeting.js';
+import { WebDriverClient } from './webdriver.js';
+import { buildDocx, readDocx } from './word.js';
 
 /** An exception a workflow raised on purpose — business vs application classification. */
 export class RpaError extends Error {
@@ -123,6 +125,8 @@ export class Engine {
   private readonly queues: QueueStore;
   private browser: Browser | undefined;
   private page: Page | undefined;
+  /** The open mobile session (raw WebDriver), closed with the run like the browser is. */
+  private webdriver: WebDriverClient | undefined;
   private deadline = 0;
   private stepsRun = 0;
   private runDirCreated = false;
@@ -177,6 +181,8 @@ export class Engine {
       if (this.browser) await this.browser.close().catch(() => {});
       this.browser = undefined;
       this.page = undefined;
+      if (this.webdriver) await this.webdriver.end().catch(() => {});
+      this.webdriver = undefined;
     }
 
     return {
@@ -289,6 +295,10 @@ export class Engine {
         return this.runGsheet(step);
       case 'hitl':
         return this.runHitl(step);
+      case 'mobile':
+        return this.runMobile(step);
+      case 'word':
+        return this.runWord(step);
       default:
         throw new Error(`Unknown step type: ${step.type}`);
     }
@@ -1259,6 +1269,158 @@ export class Engine {
       'info',
       `api.load ${method} ${url} → ${issued} request(s) in ${elapsedMs} ms (${stats.rps} rps), p50 ${stats.latencyMs.p50} ms, p95 ${stats.latencyMs.p95} ms, ${errors} error(s)`
     );
+  }
+
+  // ── Mobile (raw WebDriver → Appium, Selenium, chromedriver) ────────────────────────────────────
+
+  private async runMobile(step: Step): Promise<void> {
+    switch (normalizeAction(step.action, 'mobile')) {
+      case 'session': {
+        const server = this.interp(String(step.server ?? '')) || 'http://127.0.0.1:4723';
+        const capabilities = (step.capabilities ?? {}) as Record<string, unknown>;
+        const client = await WebDriverClient.start({
+          server,
+          capabilities,
+          timeoutMs: this.duration(step.timeoutMs, 60000, 600000)
+        });
+        this.webdriver = client;
+        if (step.saveAs) this.vars[String(step.saveAs)] = client.id ?? '';
+        await this.log('info', `mobile.session ${server} → ${client.id} (${String(capabilities['platformName'] ?? '?')})`);
+        break;
+      }
+      case 'end': {
+        if (!this.webdriver) throw new Error('mobile.end: no session is open.');
+        await this.webdriver.end();
+        this.webdriver = undefined;
+        await this.log('info', 'mobile.end → session closed');
+        break;
+      }
+      case 'tap': {
+        const client = this.mobileSession();
+        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
+        await client.click(element);
+        await this.log('info', `mobile.tap ${String(step.using)}=${this.interp(String(step.value))} → ok`);
+        break;
+      }
+      case 'type': {
+        const client = this.mobileSession();
+        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
+        if (step.clear !== false) await client.clear(element);
+        const text = this.interp(String(step.text ?? ''));
+        await client.type(element, text);
+        await this.log('info', `mobile.type ${String(step.using)}=${this.interp(String(step.value))} ← ${text.length} char(s)`);
+        break;
+      }
+      case 'getText': {
+        const client = this.mobileSession();
+        const element = await client.find(this.interp(String(step.using)), this.interp(String(step.value)));
+        const text = await client.text(element);
+        await this.save(step, text, `mobile.getText ${String(step.using)}=${this.interp(String(step.value))} → "${text.slice(0, 60)}"`);
+        break;
+      }
+      case 'waitFor': {
+        const client = this.mobileSession();
+        const using = this.interp(String(step.using));
+        const value = this.interp(String(step.value));
+        const timeout = this.duration(step.timeoutMs, 10000, 300000);
+        const wantVisible = step.state !== 'exists';
+        const deadline = Date.now() + timeout;
+        let found = false;
+        let lastError = '';
+        while (Date.now() <= deadline) {
+          try {
+            const element = await client.find(using, value);
+            if (!wantVisible || (await client.displayed(element))) { found = true; break; }
+          } catch (e) {
+            lastError = (e as Error).message;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 300));
+        }
+        if (!found) {
+          throw new Error(`mobile.waitFor ${using}=${value} → not found within ${timeout}ms${lastError ? ` (${lastError.slice(0, 120)})` : ''}`);
+        }
+        await this.log('info', `mobile.waitFor ${using}=${value} → ok`);
+        break;
+      }
+      case 'swipe': {
+        const client = this.mobileSession();
+        const rect = await client.windowRect();
+        const width = rect.width || 1080;
+        const height = rect.height || 1920;
+        const distance = Math.min(
+          Math.max(Math.floor(Number(step.distance) || Math.round(Math.min(width, height) * 0.5)), 50),
+          Math.max(width, height)
+        );
+        const duration = this.duration(step.durationMs, 500, 5000);
+        const center = { x: Math.round(width / 2), y: Math.round(height / 2) };
+        const start = { ...center };
+        const end = { ...center };
+        const direction = String(step.direction);
+        const half = Math.round(distance / 2);
+        if (direction === 'left') { start.x = center.x + half; end.x = center.x - half; }
+        if (direction === 'right') { start.x = center.x - half; end.x = center.x + half; }
+        if (direction === 'up') { start.y = center.y + half; end.y = center.y - half; }
+        if (direction === 'down') { start.y = center.y - half; end.y = center.y + half; }
+        await client.actions([
+          {
+            type: 'pointer',
+            id: 'finger1',
+            parameters: { pointerType: 'touch' },
+            actions: [
+              { type: 'pointerMove', duration: 0, x: Math.round(start.x), y: Math.round(start.y) },
+              { type: 'pointerDown', button: 0 },
+              { type: 'pointerMove', duration, x: Math.round(end.x), y: Math.round(end.y) },
+              { type: 'pointerUp', button: 0 }
+            ]
+          }
+        ]);
+        await this.log('info', `mobile.swipe ${direction} ${distance}px in ${duration}ms (screen ${width}x${height})`);
+        break;
+      }
+      case 'screenshot': {
+        const client = this.mobileSession();
+        const base64 = await client.screenshot();
+        const declared = this.interp(String(step.path ?? ''));
+        const file = declared !== ''
+          ? path.resolve(this.projectDir, declared)
+          : await this.defaultScreenshot(`mobile-${this.stepsRun + 1}`);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, Buffer.from(base64, 'base64'));
+        await this.log('info', `mobile screenshot saved to ${file}`);
+        break;
+      }
+      default:
+        throw new Error(`Unknown mobile action: ${step.action}`);
+    }
+  }
+
+  private mobileSession(): WebDriverClient {
+    if (!this.webdriver) throw new Error('mobile: no session is open — add a mobile.session step first.');
+    return this.webdriver;
+  }
+
+  // ── Word (.docx over the stdlib zip + XML) ─────────────────────────────────────────────────────
+
+  private async runWord(step: Step): Promise<void> {
+    const file = path.resolve(this.projectDir, this.interp(String(step.path ?? '')));
+    switch (normalizeAction(step.action, 'word')) {
+      case 'readText': {
+        const text = await readDocx(file);
+        const paragraphs = text === '' ? 0 : text.split('\n').length;
+        await this.save(step, text, `word.readText ${path.basename(file)} → ${text.length} char(s), ${paragraphs} paragraph(s)`);
+        break;
+      }
+      case 'writeText': {
+        const text = this.interp(String(step.text ?? ''));
+        const buffer = buildDocx(text);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, buffer);
+        await this.log('info', `word.writeText ${path.basename(file)} ← ${text.length} char(s), ${buffer.length} bytes`);
+        break;
+      }
+      default:
+        throw new Error(`Unknown word action: ${step.action}`);
+    }
   }
 
   private async runOcr(step: Step): Promise<void> {

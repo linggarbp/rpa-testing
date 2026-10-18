@@ -9,9 +9,9 @@ deliberately out.
 |---|---|---|---|
 | web | `web.*` on Playwright — targeting strict→fuzzy→anchor with **healing**, waits, tables, screenshots, `rpa record` | `test/web.e2e`, `test/heal`, `test/record` | iframes as first-class, download handling |
 | desktop | `desktop.*` (nut.js: mouse/keyboard/images) + `desktop.uia` (Windows PowerShell bridge) | `test/gaps` (UIA script + honest platform refusal) | window enumeration; an OS-level recorder stays a separate program |
-| mobile | — | — | `mobile.*` over WebdriverIO + Appium as an optional module (the stack `appium-testing` already uses). Tests gate on a connected device + a running Appium server — no fake pass |
+| mobile | `mobile.*` over a **raw W3C WebDriver client** (stdlib HTTP — Appium 2, Selenium and chromedriver all answer it): session/end/tap/type/getText/waitFor/swipe/screenshot, session closed with the run | `test/mobile` — protocol-level e2e against a mock Appium endpoint (capabilities shaping, element ops, touch actions). A physical run needs a device + Appium server, which this host does not have — no fake pass | real-device CI run once a device is attached; `mobile.end`-less workflows already close cleanly |
 | api | `api.request`; `api.load` (VUs × iterations or a duration → p50/p95/p99, rps, error rate) | `test/steps`, `test/api-load` | Postman collection import (v2.1 export), response schema checks |
-| integration: Office | `excel.*` (CSV native, XLSX via exceljs), `mail.*` (SMTP/IMAP), `pdf.readText` | `test/steps`, `test/gaps` | `word.*` (docx read/write — stdlib zip + XML), PowerPoint later |
+| integration: Office | `excel.*` (CSV native, XLSX via exceljs), `mail.*` (SMTP/IMAP), `pdf.readText`, **`word.*`** (docx read/write, stdlib zip + XML) | `test/steps`, `test/gaps`, `test/word` (LibreOffice cross-check) | PowerPoint later |
 | integration: SAP | via `web.*` on the browser UI or `api.request` on OData | — | `sap.*` needs a real use case first: GUI scripting is a Windows bridge (like UIA), OData/RFC is portable |
 | OCR | `ocr.recognize` (tesseract.js) | `test/gaps` | region hints; PDF→text→OCR fallback chain |
 | AI vision | `ai-vision.decide` (project endpoint; the key travels with the job) | `test/gaps` | screenshot → structured fields with confidence gates |

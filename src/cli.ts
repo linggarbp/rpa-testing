@@ -11,7 +11,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Engine, formatLogLine } from './engine.js';
-import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS } from './model.js';
+import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS, MOBILE_ACTIONS, WORD_ACTIONS } from './model.js';
 import { AroRobot } from './robot/aro.js';
 import { packProject, unpack } from './pack.js';
 import { QueueStore } from './store.js';
@@ -245,7 +245,8 @@ async function main(): Promise<number> {
         ['desktop', DESKTOP_ACTIONS], ['ocr', OCR_ACTIONS], ['ai-vision', VISION_ACTIONS],
         ['queue', QUEUE_ACTIONS], ['file', FILE_ACTIONS], ['excel', EXCEL_ACTIONS],
         ['data', DATA_ACTIONS], ['config', CONFIG_ACTIONS], ['mail', MAIL_ACTIONS],
-        ['pdf', PDF_ACTIONS], ['gsheet', GSHEET_ACTIONS], ['hitl', HITL_ACTIONS]
+        ['pdf', PDF_ACTIONS], ['gsheet', GSHEET_ACTIONS], ['hitl', HITL_ACTIONS],
+        ['mobile', MOBILE_ACTIONS], ['word', WORD_ACTIONS]
       ];
       for (const [type, actions] of groups) console.log(`${type.padEnd(10)} ${actions.join(', ')}`);
       console.log('\nEvery step also accepts: timeoutMs, retry, retryDelayMs, continueOnError, delayBeforeMs, delayAfterMs, saveAs, heal (off|recommend|auto).');

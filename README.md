@@ -86,6 +86,10 @@ pdf        readText                                               (native text v
 gsheet     append read                                            (Google Sheets v4 REST)
 hitl       ask                                                    (file-based prompt; `rpa hitl answer`)
 api        request load
+mobile     session end tap type getText waitFor swipe screenshot    (raw W3C WebDriver — Appium and
+                                                                    Selenium answer it; none of this
+                                                                    needs a client library)
+word       readText writeText                                      (.docx over the stdlib zip + XML)
 desktop    move click doubleClick rightClick type scroll pressKey drag clipboardCopy
            screenshot waitForImage clickImage uia                 (uia = PowerShell UI Automation, Windows)
 ocr        recognize
@@ -271,17 +275,21 @@ retry/final-attempt rule, checks that must not heal),
 session recorded and replayed by a fresh engine),
 `test/api-load.test.ts` (VUs × iterations honoured against a counting server; percentiles from real
 latencies; failures measured, not thrown),
+`test/mobile.test.ts` (the raw WebDriver client against a mock Appium endpoint: capabilities W3C
+shaping, find/click/value/text, touch-actions swipe, session closes with the run, even on failure),
+`test/word.test.ts` (write → read round-trip; a foreign docx reads; LibreOffice opens what we wrote),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
 
 ### Verified
 
-- `npm test` — 100/100, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
+- `npm test` — 111/111, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
   protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
   the queue against its own file store, healing against a page whose element id actually changed,
   recording against a page driven like a user then replayed by a fresh engine, `api.load` against a
-  server that counts its own requests.
+  server that counts its own requests, `mobile.*` against a mock Appium endpoint that answers the
+  real W3C shapes, `word.*` round-tripped and re-opened by LibreOffice.
 - CLI walk-through (2026-10-18): a workflow targeting the stale `#save-v2` ran `--heal auto` —
   `[warn] target healed … resemblance: id 'save-v2' ≈ 'save-v3' (score 0.86)` — and **Passed** in
   952 ms with 1 heal recorded in `--report`; `--heal off` on the same file failed plainly.
@@ -294,6 +302,10 @@ latencies; failures measured, not thrown),
   **310 rps / p95 18 ms / 0 errors** in-flow; a real **k6** run reported 369 rps / p95 13.8 ms —
   the gap is client overhead, and the numbers agree. Lane coverage and the road to the rest
   (mobile, Office, SAP) live in `docs/automation-lanes.md`.
+- Lane walk-through (2026-10-18): `mobile.*` drove a full protocol flow against a mock Appium
+  endpoint — session → tap → type → getText → swipe(left, 200 px) — every W3C shape asserted, and
+  the session deleted by the run's `finally` even when a step fails. `word.*` wrote a 3-paragraph
+  docx that read back identically and that **LibreOffice** opened and exported to the same text.
 - Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
   (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
   a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s

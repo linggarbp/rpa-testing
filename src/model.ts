@@ -8,7 +8,8 @@
  */
 
 export type StepType = 'web' | 'control' | 'api' | 'desktop' | 'ocr' | 'ai-vision'
-  | 'queue' | 'file' | 'excel' | 'data' | 'config' | 'mail' | 'pdf' | 'gsheet' | 'hitl';
+  | 'queue' | 'file' | 'excel' | 'data' | 'config' | 'mail' | 'pdf' | 'gsheet' | 'hitl'
+  | 'mobile' | 'word';
 
 /**
  * What happens when every declared targeting method failed:
@@ -144,6 +145,10 @@ export const MAIL_ACTIONS = ['send', 'receive'] as const;
 export const PDF_ACTIONS = ['readText'] as const;
 export const GSHEET_ACTIONS = ['append', 'read'] as const;
 export const HITL_ACTIONS = ['ask'] as const;
+/** Mobile over the raw WebDriver protocol — Appium answers it; so does Selenium. */
+export const MOBILE_ACTIONS = ['session', 'end', 'tap', 'type', 'getText', 'waitFor', 'swipe', 'screenshot'] as const;
+/** Word documents — .docx is a zip of XML; read and written with the stdlib. */
+export const WORD_ACTIONS = ['readText', 'writeText'] as const;
 
 const ACTIONS: Record<StepType, readonly string[]> = {
   web: WEB_ACTIONS,
@@ -160,7 +165,9 @@ const ACTIONS: Record<StepType, readonly string[]> = {
   mail: MAIL_ACTIONS,
   pdf: PDF_ACTIONS,
   gsheet: GSHEET_ACTIONS,
-  hitl: HITL_ACTIONS
+  hitl: HITL_ACTIONS,
+  mobile: MOBILE_ACTIONS,
+  word: WORD_ACTIONS
 };
 
 /**
@@ -182,7 +189,9 @@ const ACTION_ALIASES: Record<StepType, Record<string, string>> = {
   mail: { sendmail: 'send', sendmailmessage: 'send', getsmtpmail: 'send', getimapmail: 'receive', getoutlookmail: 'receive', getexchange: 'receive' },
   pdf: { readpdftext: 'readText' },
   gsheet: { writersheet: 'append', appendsheet: 'append', googlesheets: 'append', gsuiteapplication: 'append' },
-  hitl: { inputdialog: 'ask', formtask: 'ask', waitforformtask: 'ask' }
+  hitl: { inputdialog: 'ask', formtask: 'ask', waitforformtask: 'ask' },
+  mobile: { start: 'session', close: 'end', click: 'tap', setvalue: 'type', scroll: 'swipe', screenshot: 'screenshot' },
+  word: { readdocx: 'readText', writedocx: 'writeText', readdocument: 'readText', writedocument: 'writeText' }
 };
 
 export function normalizeAction(action: string | undefined, type: StepType): string {
@@ -371,6 +380,28 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
 
     if (step.type === 'api' && action === 'load' && String(step.url ?? '').trim() === '') {
       errors.push(`${name} (api.load) needs a "url".`);
+    }
+
+    if (step.type === 'mobile') {
+      if (action === 'session') {
+        const capabilities = step.capabilities;
+        if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities) || Object.keys(capabilities).length === 0) {
+          errors.push(`${name} (mobile.session) needs "capabilities" — e.g. { platformName: "Android", app: … }.`);
+        }
+      }
+      if (['tap', 'type', 'getText', 'waitFor'].includes(action)) {
+        if (String(step.using ?? '').trim() === '') errors.push(`${name} (mobile.${action}) needs "using" — accessibility id | id | xpath | class name.`);
+        if (String(step.value ?? '').trim() === '') errors.push(`${name} (mobile.${action}) needs "value" — the element to find.`);
+      }
+      if (action === 'type' && step.text === undefined) errors.push(`${name} (mobile.type) needs "text".`);
+      if (action === 'swipe' && !['left', 'right', 'up', 'down'].includes(String(step.direction ?? ''))) {
+        errors.push(`${name} (mobile.swipe) needs "direction" = left | right | up | down.`);
+      }
+    }
+
+    if (step.type === 'word') {
+      if (String(step.path ?? '').trim() === '') errors.push(`${name} needs a "path" to a .docx.`);
+      if (action === 'writeText' && String(step.text ?? '') === '') errors.push(`${name} (word.writeText) needs "text".`);
     }
 
     if (step.type === 'hitl' && String(step.prompt ?? '').trim() === '') errors.push(`${name} needs a "prompt".`);

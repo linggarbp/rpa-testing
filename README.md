@@ -200,7 +200,7 @@ built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 | Recording | `rpa pick` indicates one element; workflows are authored as JSON |
 | Transaction loop | `rpa init --template transactional` — one file per concern, local queue, exception classes |
 | Orchestrator | **Aro**: robots, flows, dispatch, logs, assets — this repo is the robot |
-| Queues | local `queue.*` with dispatcher/performer semantics; an Aro queue service is the next orchestrator feature |
+| Queues | local `queue.*` with dispatcher/performer semantics (Aro has a work-queue store; a robot-facing claim/status API is the missing half) |
 | Credentials | `${secret.NAME}` resolved once before step 1 (Aro's asset vault on a robot) |
 | Still open | a full recorder, ML document understanding (use OCR + regex) |
 
@@ -223,14 +223,18 @@ including a dispatched `queue.addItem` flow that is asserted on the queue file i
 
 ### Verified
 
-- `npm test` — 67/67: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
-  suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice, the queue
-  against its own file store.
-- Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
-  (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
-  a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s
-  (run `141c9b52-4bed-45b9-8dcf-e4d7d381411c`), with all 9 step-log lines readable from Aro's run
-  history. Aro's Robots list showed it `Online` with `caps=["api","control","web"]`.
+- `npm test` — 77/77: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
+  suite that now includes a dispatched `queue.addItem` → `getTransactionItem` → `setStatus Successful`
+  flow, asserted on the queue file the run wrote. Mail is exercised against a real SMTP server, PDF
+  text against a generated invoice, the queue against its own file store.
+- Live against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-families`
+  (`8c638d57-832b-4be7-9d12-2961cfeb1e2e`) enrolled, declared/proved all twelve families
+  (`api, config, control, data, excel, file, gsheet, hitl, mail, pdf, queue, web` — Aro's Robots list
+  shows exactly that set) and heartbeat was accepted; a flow dispatched from Aro ran its 5 steps and
+  **finalized Passed** (run `62797c08-4f90-4894-b616-b8f91046fbd4`).
+- The queue half of the live story waits on Aro: the deployed validator still answers a definition
+  that uses `queue.addItem` with `Step 1 has an unsupported type.` — the Aro validator PR that lifts
+  that is open, and the same robot is the one it dispatches to.
 
 ## Layout
 

@@ -84,7 +84,10 @@ Two details worth keeping:
 - The machine key is re-minted by the orchestrator on every enrolment; the project API key is used
   once and never stored. Nothing long-lived lives on the robot.
 - `proved` ≠ `declared`: modules are imported to check they load, and the proved set is what the
-  orchestrator routes on — a machine without a GUI is never handed a desktop flow.
+  orchestrator routes on — a machine without a GUI is never handed a desktop flow. The family set is
+  the engine's own: `queue`, `excel`, `file`, `data`, `config`, `gsheet` and `hitl` need nothing
+  installed and are proved by the engine running at all; `mail` and `pdf` are proved only where
+  nodemailer/imapflow or the `pdftotext` binary are present.
 
 ## Roadmap
 
@@ -92,7 +95,7 @@ Ordered by what a personal tool notices first. Nothing here is blocked on Aro.
 
 | Gap | Why it is a gap | Where it would land |
 |---|---|---|
-| Queues in Aro | The orchestration half of the pattern: items → per-item retries → outcomes. Today `queue.*` is local and dispatcher/performer share a folder | **Aro** (control plane): entity + dispatch; the robot claims items |
+| Queues in Aro | The orchestration half of the pattern: items → per-item retries → outcomes. `queue.*` is local (dispatcher and performer share a folder); Aro has a work-queue store but no robot-facing claim/status API yet | **Aro** (control plane): claim + status per item |
 | Aro validating the new step families | Its `FlowDefinitionValidator` only allows its own actions, so a *dispatched* flow cannot use `queue.*`, `excel.*`, `try`, `invoke`, … yet | **Aro**: validator + designer catalog (small PR) |
 | Schedules/triggers for flows | Aro schedules exist for test runs, not flows yet | **Aro** |
 | Mail steps (`mail.send`, `mail.receive`) | closed: nodemailer / imapflow, both optional | here |

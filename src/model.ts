@@ -10,6 +10,16 @@
 export type StepType = 'web' | 'control' | 'api' | 'desktop' | 'ocr' | 'ai-vision'
   | 'queue' | 'file' | 'excel' | 'data' | 'config' | 'mail' | 'pdf' | 'gsheet' | 'hitl';
 
+/**
+ * What happens when every declared targeting method failed:
+ *
+ * - `off`       — fail the step (the historical behaviour).
+ * - `recommend` — fail it, but run one healing pass and report what would have matched. The default:
+ *                 a failure stays a failure, and it arrives with a fix attached.
+ * - `auto`      — use the healed match and continue; the log and the run report say it happened.
+ */
+export type HealMode = 'off' | 'recommend' | 'auto';
+
 /** What `target` accepts: the targeting methods, in the order they are tried. */
 export interface TargetSpec {
   /** Strict selector (Playwright/CSS syntax). Tried first. */
@@ -30,6 +40,10 @@ export interface TargetSpec {
   textExact?: boolean;
   /** The application window a selector chain was scoped to (informational: logged, not matched). */
   scope?: Record<string, string>;
+  /** Recovery when every method above fails. Defaults to the step's or the engine's mode. */
+  heal?: HealMode;
+  /** Minimum score (0..1) a healed candidate must reach. Default 0.75. */
+  healThreshold?: number;
 }
 
 /** Post-action verification: wait for a target after the action ran. */
@@ -73,6 +87,9 @@ export interface Step {
   selectors?: string[];
   /** Post-action verification: wait for a target after the action ran. */
   verify?: VerifySpec;
+
+  /** Recovery mode for this step's target (see TargetSpec.heal). Overrides the engine default. */
+  heal?: HealMode;
 
   /** Per-step resilience, shared by every step type: timeout, delays, continue-on-error, retry. */
   timeoutMs?: number;
@@ -370,6 +387,15 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
     if (step.type === 'desktop' && action === 'uia') {
       const finds = ['name', 'automationId', 'controlType'].filter((key) => String(step[key] ?? '').trim() !== '');
       if (finds.length === 0) errors.push(`${name} needs name, automationId or controlType to find the element.`);
+    }
+
+    const healModes = ['off', 'recommend', 'auto'];
+    if (step.heal !== undefined && !healModes.includes(String(step.heal))) {
+      errors.push(`${name} has an unknown heal mode "${String(step.heal)}" (off | recommend | auto).`);
+    }
+    const targetHeal = (step.target as { heal?: unknown } | undefined)?.heal;
+    if (targetHeal !== undefined && !healModes.includes(String(targetHeal))) {
+      errors.push(`${name} › target has an unknown heal mode "${String(targetHeal)}" (off | recommend | auto).`);
     }
 
     // A targeting action without any target can only fail at run time; say so now.

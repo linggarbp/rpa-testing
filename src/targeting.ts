@@ -429,3 +429,248 @@ async function findThroughAnchor(page: Page, spec: TargetSpec, slice: number, tr
 function firstLine(message: string): string {
   return message.split('\n')[0] ?? message;
 }
+
+// ── Healing ────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Target healing — what runs when every declared method failed. Local and evidence-only, two passes:
+ *
+ *   1. `relaxed-fuzzy` — the declared attributes re-scored without the hard 'exact' gates that a
+ *      changed page usually breaks, against a lower bar;
+ *   2. `resemblance`   — hints taken from the selector text itself (id / name / class / [attr=v] /
+ *      `text`) and scored against the visible elements with the same similarity function fuzzy
+ *      matching uses.
+ *
+ * A candidate must reach `threshold` (default 0.75). Nothing is invented — no ML, no service, only
+ * strings already on the page. The caller decides whether to use the result or only report it.
+ */
+export interface HealOutcome {
+  locator: Locator;
+  /** Which pass found it. */
+  method: 'relaxed-fuzzy' | 'resemblance';
+  score: number;
+  /** A target that resolves to the healed element — meant to be pasted back into the workflow. */
+  target: TargetSpec;
+  /** One line for the operator: what matched, and how well. */
+  detail: string;
+}
+
+export interface HealOptions {
+  /** Minimum score for a healed candidate, 0..1. Default 0.75. */
+  threshold?: number;
+}
+
+export interface Hints {
+  tag?: string;
+  id?: string;
+  name?: string;
+  type?: string;
+  placeholder?: string;
+  classes: string[];
+  text?: string;
+}
+
+/** Everything a selector string and/or `text` can be re-searched by, or null when it carries none. */
+export function selectorHints(spec: TargetSpec): Hints | null {
+  const hints: Hints = { classes: [] };
+  const source =
+    typeof spec.strict === 'string' && spec.strict.trim() !== ''
+      ? spec.strict
+      : spec.strictAny?.find((value) => typeof value === 'string' && value.trim() !== '');
+  if (typeof spec.text === 'string' && spec.text.trim() !== '') hints.text = spec.text;
+
+  if (source) {
+    const tag = /^([a-zA-Z][\w-]*)/.exec(source.trim());
+    if (tag) hints.tag = tag[1]!.toLowerCase();
+    const id = /#([\w-]+)/.exec(source);
+    if (id) hints.id = id[1];
+    for (const token of source.matchAll(/\.([\w-]+)/g)) hints.classes.push(token[1]!);
+    for (const attr of source.matchAll(/\[([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]\s]+))/g)) {
+      const key = attr[1]!.toLowerCase();
+      const value = attr[2] ?? attr[3] ?? attr[4] ?? '';
+      if (value === '') continue;
+      if (key === 'id') hints.id = value;
+      else if (key === 'name') hints.name = value;
+      else if (key === 'type') hints.type = value;
+      else if (key === 'placeholder') hints.placeholder = value;
+    }
+  }
+
+  // `type`/`placeholder` alone match the world; require one piece of real evidence.
+  const usable = hints.id || hints.name || hints.text || hints.classes.length > 0;
+  return usable ? hints : null;
+}
+
+/** One visible element, reduced to what healing scores and what a suggestion can be built from. */
+interface ScannedElement {
+  tag: string;
+  locator: Locator;
+  id: string;
+  name: string;
+  type: string;
+  placeholder: string;
+  classes: string[];
+  text: string;
+}
+
+/** Healing scans stop here so a huge page cannot turn a failed step into a long walk. */
+const HEAL_SCAN_LIMIT = 600;
+
+async function scanTags(page: Page, tags: string[]): Promise<ScannedElement[]> {
+  const found: ScannedElement[] = [];
+  const seenIds = new Set<string>();
+  for (const tag of tags) {
+    const locator = page.locator(tag);
+    const count = Math.min(await locator.count().catch(() => 0), HEAL_SCAN_LIMIT);
+    for (let index = 0; index < count && found.length < HEAL_SCAN_LIMIT; index++) {
+      const item = locator.nth(index);
+      if (!(await item.isVisible().catch(() => false))) continue;
+      const id = (await item.getAttribute('id').catch(() => null)) ?? '';
+      if (id !== '' && seenIds.has(id)) continue;
+      if (id !== '') seenIds.add(id);
+      const placeholder = (await item.getAttribute('placeholder').catch(() => null)) ?? '';
+      const aria = (await item.getAttribute('aria-label').catch(() => null)) ?? '';
+      const text = ((await item.innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+        || aria
+        || placeholder;
+      found.push({
+        tag: tag.startsWith('[') || tag.startsWith('.') ? 'input' : tag,
+        locator: item,
+        id,
+        name: (await item.getAttribute('name').catch(() => null)) ?? '',
+        type: (await item.getAttribute('type').catch(() => null)) ?? '',
+        placeholder,
+        classes: ((await item.getAttribute('class').catch(() => null)) ?? '').split(/\s+/).filter(Boolean),
+        text: text.slice(0, 120)
+      });
+    }
+  }
+  return found;
+}
+
+/** A target that resolves to a scanned element — the thing a healed run suggests pasting back. */
+function suggestedTarget(candidate: ScannedElement): TargetSpec {
+  if (candidate.id) return { strict: `#${candidate.id}` };
+  if (candidate.text) return { fuzzy: { tag: candidate.tag.toUpperCase(), text: candidate.text.slice(0, 80) } };
+  if (candidate.name) return { strict: `[name="${candidate.name}"]` };
+  return { fuzzy: { tag: candidate.tag.toUpperCase() } };
+}
+
+/** Score a scan against the hints, and name the strongest component for the log line. */
+function scoreHints(hints: Hints, candidate: ScannedElement): { score: number; label: string } {
+  const strong: Array<{ label: string; value: number }> = [];
+  if (hints.id) strong.push({ label: `id '${hints.id}' ≈ '${candidate.id}'`, value: similarity(hints.id, candidate.id) });
+  if (hints.name) strong.push({ label: `name '${hints.name}' ≈ '${candidate.name}'`, value: similarity(hints.name, candidate.name) });
+  if (hints.text) strong.push({ label: `text '${hints.text}' ≈ '${candidate.text}'`, value: similarity(hints.text, candidate.text) });
+  if (strong.length > 0) {
+    const best = strong.reduce((a, b) => (b.value > a.value ? b : a));
+    const score = strong.reduce((sum, part) => sum + part.value, 0) / strong.length;
+    return { score, label: best.label };
+  }
+  // Weak evidence only (a class-based selector): token overlap wins, then placeholder/type refine.
+  const weak: number[] = [];
+  if (hints.classes.length > 0) {
+    weak.push(Math.max(...hints.classes.map((want) => Math.max(...candidate.classes.map((have) => similarity(want, have)), 0))));
+  }
+  if (hints.placeholder) weak.push(similarity(hints.placeholder, candidate.placeholder));
+  if (hints.type) weak.push(similarity(hints.type, candidate.type));
+  const label = hints.classes.length > 0 ? `class '.${hints.classes[0]}' ≈ '${candidate.classes.join(' ')}'` : 'attribute match';
+  return { score: weak.length > 0 ? weak.reduce((sum, part) => sum + part, 0) / weak.length : 0, label };
+}
+
+/** Pass 1: the declared fuzzy spec, re-scored with every gate relaxed. */
+async function healRelaxedFuzzy(page: Page, fuzzy: FuzzySpec, threshold: number): Promise<{ candidate: ScannedElement; score: number } | null> {
+  const attributesWanted = Object.keys(fuzzy.attributes ?? {});
+  const relaxed: FuzzySpec = {
+    tag: fuzzy.tag,
+    ...(fuzzy.attributes ? { attributes: fuzzy.attributes } : {}),
+    ...(fuzzy.text !== undefined ? { text: fuzzy.text } : {}),
+    threshold
+  };
+  const locator = page.locator(fuzzy.tag.toLowerCase());
+  const count = Math.min(await locator.count().catch(() => 0), HEAL_SCAN_LIMIT);
+  let best: { candidate: ScannedElement; score: number } | null = null;
+
+  for (let index = 0; index < count; index++) {
+    const item = locator.nth(index);
+    if (!(await item.isVisible().catch(() => false))) continue;
+    const attributes: Record<string, string> = {};
+    for (const name of attributesWanted) {
+      attributes[name] = (await item.getAttribute(name).catch(() => null)) ?? '';
+    }
+    if (attributesWanted.includes('aaname') && !attributes['aaname']) {
+      attributes['aaname'] = (await item.getAttribute('aria-label').catch(() => null))
+        ?? (await item.innerText().catch(() => '')) ?? '';
+    }
+    const text = ((await item.innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim();
+    const score = scoreCandidate({ attributes, text }, relaxed);
+    if (score < threshold) continue;
+    if (!best || score > best.score) {
+      best = {
+        score,
+        candidate: {
+          tag: fuzzy.tag,
+          locator: item,
+          id: (await item.getAttribute('id').catch(() => null)) ?? '',
+          name: attributes['name'] ?? (await item.getAttribute('name').catch(() => null)) ?? '',
+          type: attributes['type'] ?? '',
+          placeholder: attributes['placeholder'] ?? '',
+          classes: (attributes['class'] ?? '').split(/\s+/).filter(Boolean),
+          text: text.slice(0, 120)
+        }
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * Run the healing passes for a target that did not resolve. Returns the best candidate at or above
+ * the threshold, or null when the page offers nothing similar ("no heals available").
+ */
+export async function healTarget(page: Page, spec: TargetSpec, options: HealOptions = {}): Promise<HealOutcome | null> {
+  const threshold = Math.min(Math.max(options.threshold ?? 0.75, 0), 1);
+  const outcomes: HealOutcome[] = [];
+
+  if (spec.fuzzy) {
+    const relaxed = await healRelaxedFuzzy(page, spec.fuzzy, threshold);
+    if (relaxed) {
+      const target = suggestedTarget(relaxed.candidate);
+      outcomes.push({
+        locator: relaxed.candidate.locator,
+        method: 'relaxed-fuzzy',
+        score: relaxed.score,
+        target,
+        detail: `relaxed fuzzy <${spec.fuzzy.tag}> scored ${relaxed.score.toFixed(2)} (bar ${threshold}) → ${JSON.stringify(target)}`
+      });
+    }
+  }
+
+  const hints = selectorHints(spec);
+  if (hints) {
+    const tags = new Set<string>();
+    if (hints.tag) tags.add(hints.tag);
+    for (const fallback of ['input', 'button', 'a', 'select', 'textarea']) tags.add(fallback);
+    if (hints.id) tags.add('[id]');
+    const scanned = await scanTags(page, [...tags]);
+    let best: { candidate: ScannedElement; score: number; label: string } | null = null;
+    for (const candidate of scanned) {
+      const { score, label } = scoreHints(hints, candidate);
+      if (score < threshold) continue;
+      if (!best || score > best.score) best = { candidate, score, label };
+    }
+    if (best) {
+      const target = suggestedTarget(best.candidate);
+      outcomes.push({
+        locator: best.candidate.locator,
+        method: 'resemblance',
+        score: best.score,
+        target,
+        detail: `resemblance: ${best.label} (score ${best.score.toFixed(2)}) → ${JSON.stringify(target)}`
+      });
+    }
+  }
+
+  outcomes.sort((a, b) => b.score - a.score);
+  return outcomes[0] ?? null;
+}

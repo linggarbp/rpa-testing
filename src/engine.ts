@@ -12,13 +12,13 @@
  */
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Browser, Page } from 'playwright';
-import { normalizeAction, parseWorkflow, validateWorkflow, type Step, type Workflow } from './model.js';
+import type { Browser, Locator, Page } from 'playwright';
+import { normalizeAction, parseWorkflow, validateWorkflow, type HealMode, type Step, type TargetSpec, type Workflow } from './model.js';
 import {
   QueueStore, deleteFile, ensureDir, fileExists, listFiles, loadSettings, moveFile, readTable, writeTable
 } from './store.js';
 import { appendSheet, askHuman, readPdfText, readSheet, receiveMail, runUia, sendMail } from './gaps.js';
-import { describeTarget, resolveTarget, targetFromStep } from './targeting.js';
+import { describeTarget, healTarget, resolveTarget, targetFromStep } from './targeting.js';
 
 /** An exception a workflow raised on purpose — business vs application classification. */
 export class RpaError extends Error {
@@ -58,6 +58,13 @@ export interface EngineOptions {
    * directory; a robot passes its working directory.
    */
   baseDir?: string;
+  /**
+   * The run's healing cap — a step may ask for less healing than the cap allows, never more. `off`
+   * therefore disables healing everywhere: the flag to reach for when a failure must be seen
+   * plainly. Steps that declare nothing take the cap; with no flag at all the default is
+   * `recommend` — failures keep failing, and a candidate fix rides along in the error and report.
+   */
+  heal?: HealMode;
 }
 
 export interface RunHooks {
@@ -65,11 +72,28 @@ export interface RunHooks {
   isCancelled?: () => Promise<boolean>;
 }
 
+/** One healing event in a run — whether it was applied (`auto`) or only suggested (`recommend`). */
+export interface HealRecord {
+  /** The step's label, e.g. `3 › if › then.2`. */
+  step: string;
+  mode: HealMode;
+  /** true when the step continued on the healed match; false when it only failed with a suggestion. */
+  applied: boolean;
+  /** The target as declared, one line. */
+  from: string;
+  /** The target that resolves to the healed element — paste it back into the workflow. */
+  to: TargetSpec;
+  method: 'relaxed-fuzzy' | 'resemblance';
+  score: number;
+}
+
 export interface RunResult {
   status: 'Passed' | 'Failed';
   error?: string;
   logs: LogLine[];
   vars: Record<string, unknown>;
+  /** Every heal that fired during the run, in order. Empty when nothing needed one. */
+  heals: HealRecord[];
   durationMs: number;
   stepsRun: number;
 }
@@ -109,6 +133,12 @@ export class Engine {
   private readonly projectDir: string;
   /** Guards `invoke` against a workflow that calls itself in a cycle. */
   private invokeDepth = 0;
+  /** Every heal that fired, reported with the run. */
+  private readonly heals: HealRecord[] = [];
+  /** The step currently executing, and how many retries are still ahead of it (heal context). */
+  private currentStep?: Step;
+  private currentLabel = '';
+  private retryRemaining = 0;
 
   constructor(options: EngineOptions = {}) {
     this.options = options;
@@ -154,6 +184,7 @@ export class Engine {
       ...(failure ? { error: failure } : {}),
       logs: this.logs,
       vars: this.vars,
+      heals: this.heals,
       durationMs: Date.now() - startedAt,
       stepsRun: this.stepsRun
     };
@@ -187,26 +218,39 @@ export class Engine {
     const before = this.duration(step.delayBeforeMs, 0);
     if (before > 0) await delay(before);
 
+    // Heal context: which step this is, and how many retries are still ahead. Healing waits for the
+    // final attempt — a retry that is about to re-run the same target is not evidence yet.
+    const previous = { step: this.currentStep, label: this.currentLabel, retryRemaining: this.retryRemaining };
+    this.currentStep = step;
+    this.currentLabel = label;
+
     const attempts = this.duration(step.retry, 0, 5) + 1;
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await this.executeStep(step, hooks);
-        this.stepsRun++;
-        break;
-      } catch (e) {
-        const message = (e as Error).message;
-        if (attempt < attempts) {
-          const backoff = this.duration(step.retryDelayMs, 500);
-          await this.log('warn', `Step ${label} failed (attempt ${attempt}/${attempts}): ${message} — retrying in ${backoff}ms`);
-          await delay(backoff);
-          continue;
-        }
-        if (step.continueOnError === true) {
-          await this.log('error', `Step ${label} failed and continueOnError is set: ${message} — continuing.`);
+    try {
+      for (let attempt = 1; ; attempt++) {
+        this.retryRemaining = attempts - attempt;
+        try {
+          await this.executeStep(step, hooks);
+          this.stepsRun++;
           break;
+        } catch (e) {
+          const message = (e as Error).message;
+          if (attempt < attempts) {
+            const backoff = this.duration(step.retryDelayMs, 500);
+            await this.log('warn', `Step ${label} failed (attempt ${attempt}/${attempts}): ${message} — retrying in ${backoff}ms`);
+            await delay(backoff);
+            continue;
+          }
+          if (step.continueOnError === true) {
+            await this.log('error', `Step ${label} failed and continueOnError is set: ${message} — continuing.`);
+            break;
+          }
+          throw e;
         }
-        throw e;
       }
+    } finally {
+      this.currentStep = previous.step;
+      this.currentLabel = previous.label;
+      this.retryRemaining = previous.retryRemaining;
     }
 
     const after = this.duration(step.delayAfterMs, 0);
@@ -271,7 +315,7 @@ export class Engine {
     const log = (message: string) => this.log('info', message);
     const resolve = async () => {
       if (!target) throw new Error(`web.${String(step.action)} needs a selector or a target.`);
-      return resolveTarget(page, target, { timeoutMs: timeout, log });
+      return this.resolveWithHeal(page, target, step, timeout, log);
     };
 
     switch (normalizeAction(step.action, 'web')) {
@@ -325,7 +369,10 @@ export class Engine {
         break;
       }
       case 'waitForElement': {
-        const element = await resolve();
+        // A wait is a check, not an interaction: it stays strict on purpose — healing it would
+        // change what is being awaited. The interactions above are the ones that heal.
+        if (!target) throw new Error('web.waitForElement needs a selector or a target.');
+        const element = await resolveTarget(page, target, { timeoutMs: timeout, log });
         await element.waitFor({ state: (step.state as 'visible' | 'attached') ?? 'visible', timeout });
         break;
       }
@@ -383,6 +430,76 @@ export class Engine {
         throw new Error(`Unknown web action: ${step.action}`);
     }
     if (step.verify) await this.verifyAfter(page, step, timeout);
+  }
+
+  /**
+   * Resolve a target for an interaction, healing when every declared method failed:
+   *
+   * - `off`       — unchanged failure;
+   * - `recommend` (default) — fail, but the candidate the healing pass found is logged and appended
+   *   to the error, so the fix is one paste away;
+   * - `auto`      — act on the healed element and continue; the log line and the run's `heals`
+   *   record say which target was healed to what.
+   *
+   * Healing is skipped while retries remain (the retry has not happened yet). Checks — waits,
+   * `elementExists`, `verify` — never heal; see runWeb.
+   */
+  private async resolveWithHeal(
+    page: Page,
+    target: TargetSpec,
+    step: Step,
+    timeoutMs: number,
+    log: (message: string) => void | Promise<void>
+  ): Promise<Locator> {
+    try {
+      return await resolveTarget(page, target, { timeoutMs, log });
+    } catch (e) {
+      const mode = this.healModeFor(target, step);
+      if (mode === 'off') throw e;
+      if (this.retryRemaining > 0) {
+        await this.log('info', `heal skipped: ${this.retryRemaining} retry attempt(s) still ahead`);
+        throw e;
+      }
+
+      const outcome = await healTarget(page, target, {
+        ...(target.healThreshold !== undefined ? { threshold: target.healThreshold } : {})
+      });
+      if (!outcome) {
+        await this.log('info', 'heal: no candidate reached the healing threshold — nothing to suggest');
+        throw e;
+      }
+
+      this.heals.push({
+        step: this.currentLabel,
+        mode,
+        applied: mode === 'auto',
+        from: describeTarget(target),
+        to: outcome.target,
+        method: outcome.method,
+        score: Number(outcome.score.toFixed(2))
+      });
+
+      if (mode === 'auto') {
+        await this.log('warn', `target healed after every method failed — ${outcome.detail}`);
+        return outcome.locator;
+      }
+      await this.log('warn', `heal suggestion for step ${this.currentLabel}: ${outcome.detail} (set "heal": "auto" on the step to apply it)`);
+      throw new Error(`${(e as Error).message}\nheal suggestion: ${JSON.stringify(outcome.target)} (${outcome.method}, score ${outcome.score.toFixed(2)})`);
+    }
+  }
+
+  private healModeFor(target: TargetSpec, step: Step): HealMode {
+    // The engine's flag is a cap: a step may ask for less healing than the run allows, never more
+    // (`off` at the engine level therefore disables healing everywhere). Steps that declare nothing
+    // take the cap, and without a flag the default is `recommend`.
+    const rank: Record<HealMode, number> = { off: 0, recommend: 1, auto: 2 };
+    const declared = [target.heal, step.heal].find(
+      (value): value is HealMode => value === 'off' || value === 'recommend' || value === 'auto'
+    );
+    const flag = this.options.heal;
+    const wanted: HealMode = declared ?? flag ?? 'recommend';
+    if (flag === undefined) return wanted;
+    return rank[wanted] <= rank[flag] ? wanted : flag;
   }
 
   /**

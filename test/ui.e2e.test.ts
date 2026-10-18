@@ -7,9 +7,9 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { askHuman } from '../src/gaps.js';
-import { pickTarget } from '../src/pick.js';
-import { scaffoldTransactional } from '../src/templates.js';
+import { askHuman } from '../src/services/gaps.js';
+import { pickTarget } from '../src/ui/pick.js';
+import { scaffoldTransactional } from '../src/project/templates.js';
 import { startUi } from '../src/ui/server.js';
 
 async function withUi<T>(run: (base: string, projectDir: string) => Promise<T>): Promise<T> {

@@ -16,8 +16,8 @@
  * key on every enrolment, so nothing long-lived sits on the machine.
  */
 import { spawnSync } from 'node:child_process';
-import { Engine, formatLogLine, type LogLine } from '../engine.js';
-import { parseWorkflow, type Step } from '../model.js';
+import { Engine, formatLogLine, type LogLine } from '../engine/engine.js';
+import { parseWorkflow, type Step } from '../workflow/model.js';
 
 export interface AroRobotOptions {
   apiUrl: string;

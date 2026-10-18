@@ -33,7 +33,7 @@ export interface TargetSpec {
   anchor?: AnchorSpec;
   /** 1-based occurrence when a strict selector matches several elements. */
   idx?: number;
-  /** A raw selector chain (`<html …/><webctrl …/>`), parsed by src/selector-chain.ts. */
+  /** A raw selector chain (`<html …/><webctrl …/>`), parsed by src/workflow/selector-chain.ts. */
   selectorChain?: string;
   /** Native text targeting — Playwright's `text=` engine. */
   text?: string;

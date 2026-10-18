@@ -12,15 +12,15 @@ import { spawn } from 'node:child_process';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Engine, formatLogLine } from '../engine.js';
+import { Engine, formatLogLine } from '../engine/engine.js';
 import {
   CONFIG_ACTIONS, CONTROL_ACTIONS, DATA_ACTIONS, DESKTOP_ACTIONS, EXCEL_ACTIONS, FILE_ACTIONS,
   GSHEET_ACTIONS, HITL_ACTIONS, MAIL_ACTIONS, OCR_ACTIONS, PDF_ACTIONS, QUEUE_ACTIONS, VISION_ACTIONS, WEB_ACTIONS, API_ACTIONS,
   parseWorkflow, validateWorkflow, type Workflow
-} from '../model.js';
-import { QueueStore } from '../store.js';
-import { answerHuman, pendingHuman } from '../gaps.js';
-import { pickTarget } from '../pick.js';
+} from '../workflow/model.js';
+import { QueueStore } from '../engine/store.js';
+import { answerHuman, pendingHuman } from '../services/gaps.js';
+import { pickTarget } from './pick.js';
 
 const CATALOG: Array<{ type: string; actions: readonly string[] }> = [
   { type: 'web', actions: WEB_ACTIONS },

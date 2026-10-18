@@ -10,15 +10,15 @@
  */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { Engine, formatLogLine } from './engine.js';
-import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS, MOBILE_ACTIONS, WORD_ACTIONS } from './model.js';
+import { Engine, formatLogLine } from './engine/engine.js';
+import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS, MOBILE_ACTIONS, WORD_ACTIONS } from './workflow/model.js';
 import { AroRobot, ENGINE_CAPABILITIES } from './robot/aro.js';
-import { packProject, unpack } from './pack.js';
-import { importExport } from './import.js';
-import { pickTarget } from './pick.js';
-import { QueueStore } from './store.js';
-import { scaffoldBasic, scaffoldTransactional } from './templates.js';
-import { answerHuman, pendingHuman } from './gaps.js';
+import { packProject, unpack } from './project/pack.js';
+import { importExport } from './project/import.js';
+import { pickTarget } from './ui/pick.js';
+import { QueueStore } from './engine/store.js';
+import { scaffoldBasic, scaffoldTransactional } from './project/templates.js';
+import { answerHuman, pendingHuman } from './services/gaps.js';
 
 interface Flags {
   [key: string]: string | boolean | string[];
@@ -240,7 +240,7 @@ async function main(): Promise<number> {
         console.error('rpa record needs playwright: npm i playwright && npx playwright install chromium');
         return 2;
       }
-      const { startRecording } = await import('./recorder.js');
+      const { startRecording } = await import('./ui/recorder.js');
       const browser = await playwright.chromium.launch({ headless: flags.headless === true });
       try {
         const page = await browser.newPage();
@@ -270,7 +270,7 @@ async function main(): Promise<number> {
     }
 
     case 'doctor': {
-      const { runDoctor, DOCTOR_PROFILES } = await import('./doctor.js');
+      const { runDoctor, DOCTOR_PROFILES } = await import('./services/doctor.js');
       const profile = (values(flags, 'profile')[0] ?? 'default').toLowerCase();
       if (!(DOCTOR_PROFILES as readonly string[]).includes(profile)) {
         console.error(`unknown profile "${profile}" — pick one of: ${DOCTOR_PROFILES.join(', ')}`);

@@ -13,14 +13,14 @@
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Browser, Locator, Page } from 'playwright';
-import { normalizeAction, parseWorkflow, validateWorkflow, type HealMode, type Step, type TargetSpec, type Workflow } from './model.js';
+import { normalizeAction, parseWorkflow, validateWorkflow, type HealMode, type Step, type TargetSpec, type Workflow } from '../workflow/model.js';
 import {
   QueueStore, deleteFile, ensureDir, fileExists, listFiles, loadSettings, moveFile, readTable, writeTable
 } from './store.js';
-import { appendSheet, askHuman, readPdfText, readSheet, receiveMail, runUia, sendMail } from './gaps.js';
+import { appendSheet, askHuman, readPdfText, readSheet, receiveMail, runUia, sendMail } from '../services/gaps.js';
 import { describeTarget, healTarget, resolveTarget, targetFromStep } from './targeting.js';
-import { WebDriverClient, type MobileDriver } from './webdriver.js';
-import { startWebdriverIo } from './webdriverio-driver.js';
+import { WebDriverClient, type MobileDriver } from '../services/webdriver.js';
+import { startWebdriverIo } from '../services/webdriverio-driver.js';
 import { buildDocx, readDocx } from './word.js';
 
 /** An exception a workflow raised on purpose — business vs application classification. */

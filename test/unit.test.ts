@@ -4,9 +4,9 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Engine, interpolate } from '../src/engine.js';
-import { parseWorkflow, validateWorkflow, normalizeAction, type FuzzySpec } from '../src/model.js';
-import { centerDistance, relationHolds, scoreCandidate, similarity, targetFromStep } from '../src/targeting.js';
+import { Engine, interpolate } from '../src/engine/engine.js';
+import { parseWorkflow, validateWorkflow, normalizeAction, type FuzzySpec } from '../src/workflow/model.js';
+import { centerDistance, relationHolds, scoreCandidate, similarity, targetFromStep } from '../src/engine/targeting.js';
 
 // ── Targeting maths ─────────────────────────────────────────────────────────────────────────────
 

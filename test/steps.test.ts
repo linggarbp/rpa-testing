@@ -9,9 +9,9 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Engine, formatLogLine } from '../src/engine.js';
-import { parseWorkflow, validateWorkflow } from '../src/model.js';
-import { QueueStore } from '../src/store.js';
+import { Engine, formatLogLine } from '../src/engine/engine.js';
+import { parseWorkflow, validateWorkflow } from '../src/workflow/model.js';
+import { QueueStore } from '../src/engine/store.js';
 
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'rpa-steps-'));

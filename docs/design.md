@@ -14,6 +14,12 @@ workflow.json ──► parseWorkflow ──► validateWorkflow ──► Engin
                         Playwright page
 ```
 
+The folders mirror that direction: `src/workflow/` is the format (model, target spec, selector chains),
+`src/engine/` executes it (engine, targeting, and the store its steps read and write), `src/project/`
+holds what a project is made of (templates, packages, the legacy importer), `src/services/` the steps
+that need something outside Node, and `src/ui/` + `src/robot/` are the two front ends — with `src/cli.ts`
+on top of all of them.
+
 ## The step model
 
 One shape for every step:
@@ -120,7 +126,7 @@ same server: the canvas and palette edit the workflow, the console renders the r
 
 ## Importing a legacy export
 
-`src/import.ts` reads a legacy desktop-automation export (XAML, or a project descriptor listing XAML
+`src/project/import.ts` reads a legacy desktop-automation export (XAML, or a project descriptor listing XAML
 files) and writes this tool's JSON plus a `PORTING-REPORT.md`. It is a converter at the edge, not a
 second runtime: the engine only ever executes JSON, and a converted file is an ordinary workflow —
 `rpa run`, `rpa ui` and a dispatched flow treat it like anything else.
@@ -148,3 +154,8 @@ second runtime: the engine only ever executes JSON, and a converted file is an o
   click Run, watch the console).
 - `test/robotProtocol.test.ts` — a fake orchestrator that records every call and asserts the
   protocol: enrol, heartbeat, claim, logs, cancel, finalize — including the failure path.
+
+Runners: the suites import `test` from `node:test` and nothing else, so the eight headless files run
+unchanged under Jest (`jest.config.mjs`) and Vitest (`vitest.config.ts`) as well — each maps the
+`node:test` specifier to a shim in `test/support/` that speaks the runner's own API and keeps the skip
+reason. Only the two `.e2e` files are pinned to `npm test`, which is where a browser is guaranteed.

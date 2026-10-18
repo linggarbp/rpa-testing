@@ -12,13 +12,15 @@ import { spawn } from 'node:child_process';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Engine } from '../engine.js';
+import { Engine, formatLogLine } from '../engine.js';
 import {
   CONFIG_ACTIONS, CONTROL_ACTIONS, DATA_ACTIONS, DESKTOP_ACTIONS, EXCEL_ACTIONS, FILE_ACTIONS,
   GSHEET_ACTIONS, HITL_ACTIONS, MAIL_ACTIONS, OCR_ACTIONS, PDF_ACTIONS, QUEUE_ACTIONS, VISION_ACTIONS, WEB_ACTIONS, API_ACTIONS,
   parseWorkflow, validateWorkflow, type Workflow
 } from '../model.js';
 import { QueueStore } from '../store.js';
+import { answerHuman, pendingHuman } from '../gaps.js';
+import { pickTarget } from '../pick.js';
 
 const CATALOG: Array<{ type: string; actions: readonly string[] }> = [
   { type: 'web', actions: WEB_ACTIONS },
@@ -143,6 +145,49 @@ export async function startUi(options: UiOptions): Promise<UiHandle> {
           return void await send(response, 200, { item });
         }
 
+        if (url.pathname === '/api/queue/status' && request.method === 'POST') {
+          const body = await readJson(request);
+          const name = String(body.name ?? '');
+          const id = String(body.id ?? '');
+          const status = String(body.status ?? '');
+          if (!name || !id || !status) return void await send(response, 400, { error: 'name, id and status are required' });
+          const kind = String(body.exceptionType ?? '').toLowerCase();
+          const item = await queues.setStatus(
+            name,
+            id,
+            status,
+            String(body.reason ?? '') || undefined,
+            kind === 'business' || kind === 'application' || kind === 'system' ? kind : undefined
+          );
+          return void await send(response, 200, { item });
+        }
+
+        if (url.pathname === '/api/hitl') {
+          return void await send(response, 200, { requests: await pendingHuman(projectDir) });
+        }
+
+        if (url.pathname === '/api/hitl/answer' && request.method === 'POST') {
+          const body = await readJson(request);
+          const id = String(body.id ?? '');
+          const value = String(body.value ?? '');
+          if (!id) return void await send(response, 400, { error: 'id is required' });
+          const prompt = await answerHuman(projectDir, id, value);
+          return void await send(response, 200, { ok: true, id, prompt });
+        }
+
+        if (url.pathname === '/api/pick' && request.method === 'POST') {
+          const body = await readJson(request);
+          const target = String(body.url ?? '');
+          if (!target) return void await send(response, 400, { error: 'a url is required' });
+          // The same code path as `rpa pick`, so the button and the verb cannot drift apart.
+          const step = await pickTarget(target, {
+            timeoutMs: Number(body.timeoutMs ?? 120000),
+            headless: body.headless === true
+          });
+          if (!step) return void await send(response, 408, { error: 'nothing was picked before the timeout' });
+          return void await send(response, 200, { step });
+        }
+
         if (url.pathname === '/api/queue') {
           const name = url.searchParams.get('name') ?? '';
           if (!name) return void await send(response, 400, { error: 'a queue name is required' });
@@ -174,7 +219,8 @@ export async function startUi(options: UiOptions): Promise<UiHandle> {
             // Entry-point arguments typed into the Studio's panel arrive here as variables.
             variables: (body.variables ?? {}) as Record<string, unknown>,
             onLog: (line) => {
-              emit('log', line);
+              // `text` is the same rendering the CLI prints, so the console shows fields too.
+              emit('log', { ...line, text: formatLogLine(line) });
             }
           });
           emit('started', { file, name: workflow.name ?? file });

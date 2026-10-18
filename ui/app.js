@@ -431,7 +431,8 @@ async function run() {
       if (event === 'log') {
         const line = document.createElement('div');
         line.className = payload.level;
-        line.textContent = `[${payload.level}] ${payload.message}`;
+        // `text` is the server's rendering (level, structured fields, message) — one format, one place.
+        line.textContent = payload.text ?? `[${payload.level}] ${payload.message}`;
         console_.appendChild(line);
         console_.scrollTop = console_.scrollHeight;
       }
@@ -451,9 +452,33 @@ async function loadQueue() {
   try {
     const queue = await api(`/api/queue?name=${encodeURIComponent(name)}`);
     $('queue-counts').textContent = Object.entries(queue.counts).map(([status, count]) => `${status}: ${count}`).join('  ·  ') || 'empty';
-    $('queue-table').querySelector('tbody').innerHTML = queue.items
-      .map((item) => `<tr><td class="status">${item.status}</td><td>${item.reference}</td><td>${JSON.stringify(item.data)}</td><td>${item.retries ? `retries=${item.retries}` : ''}</td></tr>`)
-      .join('');
+    const host = $('queue-table').querySelector('tbody');
+    host.innerHTML = '';
+    for (const item of queue.items) {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td class="status">${item.status}</td><td>${item.reference}</td><td>${JSON.stringify(item.data)}</td><td>${item.retries ? `retries=${item.retries}` : ''}</td>`;
+
+      // What a performer's setStatus does, from the Studio: close an item, or hand it back as New.
+      const action = document.createElement('td');
+      action.innerHTML = `<select data-status>
+          ${['Successful', 'BusinessException', 'ApplicationException', 'Retry', 'Abandoned', 'New'].map((status) => `<option${status === 'Successful' ? ' selected' : ''}>${status}</option>`).join('')}
+        </select><button class="ghost small" data-set>set</button>`;
+      action.querySelector('[data-set]').onclick = async () => {
+        $('queue-message').textContent = '';
+        try {
+          await api('/api/queue/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, id: item.id, status: action.querySelector('[data-status]').value })
+          });
+          await loadQueue();
+        } catch (error) {
+          $('queue-message').textContent = String(error.message);
+        }
+      };
+      row.appendChild(action);
+      host.appendChild(row);
+    }
   } catch (error) {
     $('queue-counts').textContent = String(error.message);
   }
@@ -462,22 +487,135 @@ async function loadQueue() {
 async function addQueueItem() {
   const name = $('queue-name').value.trim();
   const reference = $('queue-ref').value.trim();
-  if (!name || !reference) return;
+  $('queue-message').textContent = '';
+  if (!name || !reference) {
+    $('queue-message').textContent = 'a queue name and a reference are required';
+    return;
+  }
   let data = {};
-  try { data = JSON.parse($('queue-data').value || '{}'); } catch { /* keep {} */ }
-  await fetch('/api/queue/add', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, reference, data })
-  });
-  $('queue-ref').value = '';
-  await loadQueue();
+  try {
+    data = JSON.parse($('queue-data').value || '{}');
+  } catch {
+    $('queue-message').textContent = 'the data must be JSON';
+    return;
+  }
+  try {
+    await api('/api/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, reference, data })
+    });
+    $('queue-ref').value = '';
+    await loadQueue();
+  } catch (error) {
+    $('queue-message').textContent = String(error.message);
+  }
+}
+
+/* ── Human in the loop: the pending questions a running workflow is waiting on ────────────────── */
+
+let hitlTimer = null;
+
+async function loadHitl() {
+  try {
+    const { requests } = await api('/api/hitl');
+    const host = $('hitl-list');
+    host.innerHTML = '';
+    if (requests.length === 0) {
+      host.innerHTML = '<div class="hint">nothing waiting — hitl.ask shows up here while it runs</div>';
+      return;
+    }
+    for (const request of requests) {
+      const card = document.createElement('div');
+      card.className = 'step';
+      card.innerHTML = `
+        <div class="head"><span class="type">hitl.ask</span><span class="summary">${request.createdAt ?? ''}</span></div>
+        <div class="hint">${request.prompt}</div>`;
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<input placeholder="answer"><button class="ghost small">answer</button>`;
+      const input = row.querySelector('input');
+      const answer = async (value) => {
+        $('hitl-message').textContent = '';
+        try {
+          await api('/api/hitl/answer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: request.id, value })
+          });
+          $('hitl-message').textContent = `answered ${request.id}: ${value}`;
+          await loadHitl();
+        } catch (error) {
+          $('hitl-message').textContent = String(error.message);
+        }
+      };
+      row.querySelector('button').onclick = () => void answer(input.value);
+      input.onkeydown = (event) => { if (event.key === 'Enter') void answer(input.value); };
+      card.appendChild(row);
+
+      if (Array.isArray(request.choices) && request.choices.length > 0) {
+        const choices = document.createElement('div');
+        choices.className = 'row';
+        for (const choice of request.choices) {
+          const button = document.createElement('button');
+          button.className = 'ghost small';
+          button.textContent = choice;
+          button.onclick = () => void answer(choice);
+          choices.appendChild(button);
+        }
+        card.appendChild(choices);
+      }
+      host.appendChild(card);
+    }
+  } catch (error) {
+    $('hitl-message').textContent = String(error.message);
+  }
+}
+
+/* ── Pick element: the same code path as `rpa pick`, landing the step on the canvas ───────────── */
+
+async function pickElement() {
+  const url = $('pick-url').value.trim() || firstGotoUrl();
+  if (!url) {
+    $('props-hint').textContent = 'give a URL to open first (the workflow has no web.goto to reuse)';
+    return;
+  }
+  $('pick-url').value = url;
+  $('props-hint').textContent = `a browser is opening ${url} — click the element you want (2 minutes)`;
+  try {
+    const { step } = await api('/api/pick', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, timeoutMs: 120000 })
+    });
+    const { steps } = currentContext();
+    steps.push(step);
+    state.selected = steps.length - 1;
+    render();
+    switchTab('props');
+    $('props-hint').textContent = 'picked — the new step is selected below';
+  } catch (error) {
+    $('props-hint').textContent = String(error.message);
+  }
+}
+
+function firstGotoUrl() {
+  for (const step of state.workflow.steps ?? []) {
+    if (step.type === 'web' && step.action === 'goto' && step.url) return String(step.url);
+  }
+  return '';
 }
 
 function switchTab(name) {
   for (const button of document.querySelectorAll('.tabs button')) button.classList.toggle('active', button.dataset.tab === name);
   for (const panel of document.querySelectorAll('.tab-panel')) panel.classList.add('hidden');
   $(`tab-${name}`).classList.remove('hidden');
+  // Pending questions appear while a workflow is waiting on one, so the tab polls while it is open.
+  if (hitlTimer) { clearInterval(hitlTimer); hitlTimer = null; }
+  if (name === 'human') {
+    void loadHitl();
+    hitlTimer = setInterval(() => void loadHitl(), 3000);
+  }
 }
 
 /* ── Wiring ──────────────────────────────────────────────────────────────────────────────────── */
@@ -485,6 +623,8 @@ function switchTab(name) {
 for (const button of document.querySelectorAll('.tabs button')) button.onclick = () => switchTab(button.dataset.tab);
 $('run').onclick = () => void run();
 $('save').onclick = () => void save();
+$('pick').onclick = () => void pickElement();
+$('hitl-refresh').onclick = () => void loadHitl();
 $('palette-filter').oninput = renderPalette;
 $('clear-console').onclick = () => { $('console').textContent = ''; };
 $('queue-load').onclick = () => void loadQueue();
@@ -494,4 +634,5 @@ $('workflow-picker').onchange = (event) => void loadWorkflow(event.target.value)
 state.catalog = (await api('/api/activities')).catalog;
 renderPalette();
 await loadProject();
+$('pick-url').value = firstGotoUrl();
 switchTab('props');

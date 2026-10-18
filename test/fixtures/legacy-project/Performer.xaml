@@ -1,0 +1,43 @@
+<Activity x:Class="Performer"
+          xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+          xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+          xmlns:a="clr-namespace:Automation.Activities;assembly=Automation.Activities">
+  <Sequence DisplayName="Performer">
+    <a:GetTransactionItem DisplayName="Claim one transaction" QueueName="[Config(&quot;Queue&quot;).ToString]" Output="[TransactionItem]" />
+    <If DisplayName="Anything left?" Condition="[TransactionItem = Nothing]">
+      <If.Then>
+        <Sequence>
+          <a:LogMessage DisplayName="Empty queue" Text="Nothing left in the queue." Level="Info" />
+        </Sequence>
+      </If.Then>
+      <If.Else>
+        <Sequence DisplayName="Process one transaction">
+          <TryCatch DisplayName="Process with classification">
+            <TryCatch.Try>
+              <Sequence>
+                <a:LogMessage DisplayName="Start" Text="[&quot;Processing &quot; + TransactionItem(&quot;reference&quot;).ToString]" Level="Info" />
+                <If DisplayName="Known bad invoice" Condition="[TransactionItem(&quot;reference&quot;) = &quot;fail-me.pdf&quot;]">
+                  <If.Then>
+                    <Sequence>
+                      <Throw DisplayName="Unreadable" Exception="New BusinessRuleException(&quot;the invoice is unreadable&quot;)" />
+                    </Sequence>
+                  </If.Then>
+                </If>
+                <a:SetTransactionStatus DisplayName="Close as successful" QueueName="[Config(&quot;Queue&quot;).ToString]" Status="[TransactionStatus.Successful]" />
+              </Sequence>
+            </TryCatch.Try>
+            <TryCatch.Catches>
+              <Catch x:TypeArguments="a:BusinessRuleException">
+                <ActivityAction>
+                  <Sequence>
+                    <a:SetTransactionStatus DisplayName="Close as business exception" QueueName="[Config(&quot;Queue&quot;).ToString]" Status="[TransactionStatus.BusinessException]" Reason="[exception.Message]" />
+                  </Sequence>
+                </ActivityAction>
+              </Catch>
+            </TryCatch.Catches>
+          </TryCatch>
+        </Sequence>
+      </If.Else>
+    </If>
+  </Sequence>
+</Activity>

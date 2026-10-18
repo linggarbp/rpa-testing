@@ -1,0 +1,18 @@
+<Activity x:Class="OrdersUpdate"
+          xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+          xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+          xmlns:a="clr-namespace:Automation.Activities;assembly=Automation.Activities">
+  <Sequence DisplayName="Update orders">
+    <a:ReadRange DisplayName="Read the sheet" WorkbookPath="Data\Orders.xlsx" SheetName="Orders" DataTable="[orders]" />
+    <a:ForEachRow DisplayName="Each order" DataTable="[orders]">
+      <a:ForEachRow.Body>
+        <ActivityAction>
+          <Sequence>
+            <a:LogMessage DisplayName="Say it" Text="[&quot;order &quot; + order(&quot;Name&quot;).ToString]" Level="Info" />
+          </Sequence>
+        </ActivityAction>
+      </a:ForEachRow.Body>
+    </a:ForEachRow>
+    <a:WriteCell DisplayName="Stamp the summary" WorkbookPath="Data\Orders.xlsx" SheetName="Summary" Cell="B2" Text="ported" />
+  </Sequence>
+</Activity>

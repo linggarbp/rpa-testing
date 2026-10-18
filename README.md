@@ -37,10 +37,11 @@ npm run rpa -- run demo/Main.json --headed
 npm run rpa -- validate demo/Main.json
 ```
 
-`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab,
-served by one Node process. It works the same on Windows, Linux and macOS (`--no-open` on a headless
-host, `--port N` to move it). There is no bundler, no Electron and no build step — the page is three
-static files in `ui/`.
+`rpa ui` is the whole Studio: canvas + activity palette + properties + live console + queue tab
+(add items, set a status) + a Human tab for pending `hitl.ask` questions, plus a **Pick element**
+button that runs the same code path as `rpa pick` and drops the step onto the canvas. It works the
+same on Windows, Linux and macOS (`--no-open` on a headless host, `--port N` to move it). There is no
+bundler, no Electron and no build step — the page is three static files in `ui/`.
 
 Run a workflow as a robot for an Aro orchestrator:
 
@@ -68,7 +69,11 @@ Everything the engine does is cross-platform Node; the differences are the ones 
 
 Capabilities are *proved*, not claimed: `rpa robot` probes which modules actually load and reports
 that set to the orchestrator, so a machine without a desktop module is never handed a desktop flow.
-`rpa robot --once` prints the declared/proved pair.
+The engine families (`queue`, `excel`, `file`, `data`, `config`, `gsheet`, `hitl`) are proved by the
+engine itself — they need nothing installed — while `mail` and `pdf` are proved only where
+nodemailer/imapflow or the `pdftotext` binary are present. A robot therefore declares all twelve
+families by default and the orchestrator routes on what it proved, so a flow it cannot run is refused
+at dispatch instead of failing mid-run. `rpa robot --once` prints the declared/proved pair.
 
 ## Activities
 
@@ -182,7 +187,8 @@ and `--heal recommend` previews what `auto` would have done. Every heal lands in
 under `heals`, applied or merely suggested.
 
 `rpa pick <url>` opens a browser, lets you click an element, and prints the target JSON to paste in
-— the "indicate element" workflow, without a designer.
+— the "indicate element" workflow, without a designer. The Studio's **Pick element** button calls the
+same code (`src/pick.ts`, `POST /api/pick { url }`) and appends the step where the canvas is pointing.
 
 ## Transactional loop template
 
@@ -237,6 +243,42 @@ A file that changed after packing is refused by name (`Main.json does not match 
 is what the hashes are for. There is no signing: the manifest proves a package is intact, not who
 built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 
+## Importing a legacy export
+
+`rpa import <file.xaml|project.json> --out <dir>` reads a legacy desktop-automation export and writes
+this tool's JSON beside a `PORTING-REPORT.md`. The engine stays JSON — this is a converter at the
+edge, not a second runtime.
+
+```bash
+rpa import LegacyBot/project.json --out bot
+cd bot && npm --prefix .. run rpa -- run Dispatcher.json
+```
+
+| Converted | Becomes |
+|---|---|
+| `Sequence`, `Flowchart`, `StateMachine` | flattened into their steps (a state machine gets a note) |
+| `If`, `While`, `ForEach` | `control.if` / `while` / `foreach` |
+| `TryCatch` / `Throw` | `control.try` (a business-rule exception type → the `business` catch) |
+| `RetryScope`, `Delay`, `Assign`, `MultipleAssign` | `control.retryScope`, `delay`, `setVar`, `math` |
+| `LogMessage`, `InvokeWorkflowFile`, `InputDialog` | `control.log`, `invoke`, `hitl.ask` |
+| `Click`, `TypeInto`, `GetText` and an application-scope container | `web.click` / `type` / `getText`; a scope's URL becomes `web.goto` |
+| `AddQueueItem`, `GetTransactionItem`, `SetTransactionStatus` | `queue.addItem` / `getTransactionItem` / `setStatus` |
+| `ReadRange`, `WriteRange`, `WriteCell`, `ForEachRow` | `excel.*` (the loop keeps the sheet it was read from) |
+| `ForEachFileX`, `MoveFile`, `ReadPDFText` | `file.forEachFile`, `file.move`, `pdf.readText` |
+| `Matches`, `DeserializeJson` | `data.regexMatches`, `data.jsonParse` |
+
+Selector strings are routed through `parseSelectorChain`, so a recorded chain arrives as a target
+this engine resolves. Expressions are translated only where the meaning is unambiguous
+(`Config("Queue")` → `${Config.Queue}`, `RetryNumber + 1` → `control.math`); everything else — an
+unknown activity, an untranslatable expression, a scope that does not exist here — lands in the
+report with its source line:
+
+```md
+| Line | Activity | What happened |
+|---|---|---|
+| 7 | `ExcelApplicationScope` | no equivalent step — the container is gone, the steps inside it are kept |
+```
+
 ## Design notes
 
 | Concern | This tool |
@@ -252,7 +294,7 @@ built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 | Recording | `rpa record <url>` — click through a page, get a draft workflow (unique-id targets first, fuzzy always); `rpa pick` for one element |
 | Transaction loop | `rpa init --template transactional` — one file per concern, local queue, exception classes |
 | Orchestrator | **Aro**: robots, flows, dispatch, logs, assets — this repo is the robot |
-| Queues | local `queue.*` with dispatcher/performer semantics; an Aro queue service is the next orchestrator feature |
+| Queues | local `queue.*` with dispatcher/performer semantics (Aro has a work-queue store; a robot-facing claim/status API is the missing half) |
 | Credentials | `${secret.NAME}` resolved once before step 1 (Aro's asset vault on a robot) |
 | Still open | a full recorder, ML document understanding (use OCR + regex) |
 
@@ -268,6 +310,7 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/transaction-loop.test.ts` (the scaffolded template: business vs application exception paths),
 `test/selector-chain.test.ts` (selector-chain parsing, entry-point arguments, verify),
 `test/pack.test.ts` (pack → run from the archive; a tampered file refused),
+`test/import.test.ts` (a synthetic dispatcher/performer pair imported and run against the queue; the porting report),
 `test/heal.test.ts` (a changed id healed by resemblance, the recommend default, the `--heal` cap,
 retry/final-attempt rule, checks that must not heal),
 `test/doctor.test.ts` (collector shape, profiles, project validation, the report zip),
@@ -279,17 +322,20 @@ latencies; failures measured, not thrown),
 shaping, find/click/value/text, touch-actions swipe, session closes with the run, even on failure),
 `test/word.test.ts` (write → read round-trip; a foreign docx reads; LibreOffice opens what we wrote),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
-`test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
-`test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
+`test/ui.e2e.test.ts` (the Studio's API — including the Human tab answering a waiting `hitl.ask` — and the page driven in a real browser),
+`test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator,
+including a dispatched `queue.addItem` flow that is asserted on the queue file it wrote).
 
 ### Verified
 
-- `npm test` — 111/111, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
+- `npm test` — 119/119, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
   protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
-  the queue against its own file store, healing against a page whose element id actually changed,
-  recording against a page driven like a user then replayed by a fresh engine, `api.load` against a
-  server that counts its own requests, `mobile.*` against a mock Appium endpoint that answers the
-  real W3C shapes, `word.*` round-tripped and re-opened by LibreOffice.
+  the queue against its own file store, a package against a tampered archive, a legacy export against
+  a synthetic dispatcher/performer pair that is imported and then run, the Studio's panels in a real
+  browser, the pick code path against a real chromium click, healing against a page whose element id
+  changed for real, recording against a page driven like a user then replayed by a fresh engine,
+  `api.load` against a server that counts its own requests, `mobile.*` against a mock Appium endpoint
+  that answers the real W3C shapes, and `word.*` round-tripped and re-opened by LibreOffice.
 - CLI walk-through (2026-10-18): a workflow targeting the stale `#save-v2` ran `--heal auto` —
   `[warn] target healed … resemblance: id 'save-v2' ≈ 'save-v3' (score 0.86)` — and **Passed** in
   952 ms with 1 heal recorded in `--report`; `--heal off` on the same file failed plainly.
@@ -306,11 +352,12 @@ shaping, find/click/value/text, touch-actions swipe, session closes with the run
   endpoint — session → tap → type → getText → swipe(left, 200 px) — every W3C shape asserted, and
   the session deleted by the run's `finally` even when a step fails. `word.*` wrote a 3-paragraph
   docx that read back identically and that **LibreOffice** opened and exported to the same text.
-- Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
-  (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
-  a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s
-  (run `141c9b52-4bed-45b9-8dcf-e4d7d381411c`), with all 9 step-log lines readable from Aro's run
-  history. Aro's Robots list showed it `Online` with `caps=["api","control","web"]`.
+- Live against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-families`
+  (`8c638d57-832b-4be7-9d12-2961cfeb1e2e`) enrolled, declared/proved all twelve families
+  (`api, config, control, data, excel, file, gsheet, hitl, mail, pdf, queue, web` — Aro's Robots list
+  shows exactly that set) and heartbeat was accepted; a flow dispatched from Aro ran its 5 steps and
+  **finalized Passed** (run `62797c08-4f90-4894-b616-b8f91046fbd4`). Earlier in the day the same
+  round-trip proved the protocol with `rpa-testing-verify` (`web, control, api`, 9 step-log lines).
 
 ## Layout
 
@@ -321,6 +368,8 @@ src/engine.ts       step execution, resilience, variables, logging
 src/store.ts        local queue, settings (JSON/CSV/XLSX), files, tables
 src/templates.ts    project templates (basic, transactional)
 src/selector-chain.ts  selector-chain parsing (`<html/><webctrl/>` form)
+src/import.ts       the legacy-export importer (XAML → JSON + PORTING-REPORT.md)
+src/pick.ts         the pick code path (CLI verb and Studio button)
 src/pack.ts         the package format (zip + manifest, node:zlib)
 src/doctor.ts       environment diagnostics: collectors, profiles, report / zip
 src/gaps.ts         mail, PDF, Google Sheets, HITL, Windows UIA

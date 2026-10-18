@@ -1158,6 +1158,7 @@ export class Engine {
   // ── API / OCR / AI vision ─────────────────────────────────────────────────────────────────────
 
   private async runApi(step: Step): Promise<void> {
+    if (normalizeAction(step.action, 'api') === 'load') return this.runApiLoad(step);
     const url = this.interp(String(step.url ?? ''));
     if (!url) throw new Error('api.request needs a "url".');
     const method = String(step.method ?? 'GET').toUpperCase();
@@ -1172,6 +1173,92 @@ export class Engine {
       throw new Error(`API ${method} ${url} returned ${response.status}, expected ${step.assertStatus}`);
     }
     await this.log('info', `API ${method} ${url} → ${response.status}`);
+  }
+
+  /**
+   * `api.load` — a smoke-shaped load check, deliberately small: VUs × iterations (a duration also
+   * caps it), latency percentiles, error rate. It is not a load-testing platform; it answers "does
+   * this endpoint hold up before the bot leans on it", from inside a workflow, with real numbers.
+   * A non-2xx never throws here — it is counted, because that is the measurement.
+   */
+  private async runApiLoad(step: Step): Promise<void> {
+    const url = this.interp(String(step.url ?? ''));
+    if (!url) throw new Error('api.load needs a "url".');
+    const method = String(step.method ?? 'GET').toUpperCase();
+    const vus = Math.min(Math.max(Math.floor(Number(step.vus) || 1), 1), 50);
+    let iterations = Math.max(Math.floor(Number(step.iterations) || 0), 0);
+    const durationMs = Math.max(Math.floor(Number(step.durationMs) || 0), 0);
+    if (iterations === 0 && durationMs === 0) iterations = 10;
+
+    const init: RequestInit = { method };
+    if (step.headers) init.headers = step.headers as Record<string, string>;
+    if (step.body !== undefined) init.body = typeof step.body === 'string' ? this.interp(step.body) : JSON.stringify(step.body);
+
+    const timeoutMs = this.duration(step.timeoutMs, 30000, 300000);
+    const expect = Number.isFinite(Number(step.expectStatus)) ? Number(step.expectStatus) : undefined;
+
+    let issued = 0;
+    let errors = 0;
+    const latencies: number[] = [];
+    const startedAt = Date.now();
+    const deadline = durationMs > 0 ? startedAt + durationMs : Number.POSITIVE_INFINITY;
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (iterations > 0 && issued >= iterations) return;
+        if (durationMs > 0 && Date.now() >= deadline) return;
+        issued++;
+        const requestStarted = Date.now();
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            const response = await fetch(url, { ...init, signal: controller.signal });
+            await response.arrayBuffer(); // consume the body: a stream nobody reads is not a finished request
+            if (expect !== undefined && response.status !== expect) errors++;
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch {
+          errors++;
+        }
+        latencies.push(Date.now() - requestStarted);
+      }
+    };
+    await Promise.all(Array.from({ length: vus }, () => worker()));
+
+    const elapsedMs = Math.max(Date.now() - startedAt, 1);
+    latencies.sort((a, b) => a - b);
+    const percentile = (p: number): number => {
+      if (latencies.length === 0) return 0;
+      const index = Math.min(latencies.length - 1, Math.max(0, Math.ceil((p / 100) * latencies.length) - 1));
+      return latencies[index]!;
+    };
+    const stats = {
+      url,
+      method,
+      vus,
+      requested: issued,
+      errors,
+      durationMs: elapsedMs,
+      rps: Number((issued / (elapsedMs / 1000)).toFixed(1)),
+      latencyMs: {
+        min: latencies[0] ?? 0,
+        avg: latencies.length > 0 ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : 0,
+        p50: percentile(50),
+        p95: percentile(95),
+        p99: percentile(99),
+        max: latencies[latencies.length - 1] ?? 0
+      }
+    };
+    const name = String(step.saveAs ?? 'load');
+    this.vars[name] = JSON.stringify(stats);
+    this.vars[`${name}.p95`] = String(stats.latencyMs.p95);
+    this.vars[`${name}.errors`] = String(errors);
+    await this.log(
+      'info',
+      `api.load ${method} ${url} → ${issued} request(s) in ${elapsedMs} ms (${stats.rps} rps), p50 ${stats.latencyMs.p50} ms, p95 ${stats.latencyMs.p95} ms, ${errors} error(s)`
+    );
   }
 
   private async runOcr(step: Step): Promise<void> {

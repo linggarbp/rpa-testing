@@ -127,7 +127,7 @@ export const CONTROL_ACTIONS = [
   'delay', 'setVar', 'math', 'log', 'if', 'switch', 'repeat', 'while', 'foreach',
   'try', 'throw', 'retryScope', 'invoke', 'stateMachine'
 ] as const;
-export const API_ACTIONS = ['request'] as const;
+export const API_ACTIONS = ['request', 'load'] as const;
 export const DESKTOP_ACTIONS = [
   'move', 'click', 'doubleClick', 'rightClick', 'type', 'scroll', 'pressKey', 'drag',
   'clipboardCopy', 'screenshot', 'waitForImage', 'clickImage', 'uia'
@@ -367,6 +367,10 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
     if (step.type === 'gsheet') {
       if (String(step.spreadsheetId ?? '').trim() === '') errors.push(`${name} needs a "spreadsheetId".`);
       if (String(step.range ?? '').trim() === '') errors.push(`${name} needs a "range", e.g. "Sheet1!A1".`);
+    }
+
+    if (step.type === 'api' && action === 'load' && String(step.url ?? '').trim() === '') {
+      errors.push(`${name} (api.load) needs a "url".`);
     }
 
     if (step.type === 'hitl' && String(step.prompt ?? '').trim() === '') errors.push(`${name} needs a "prompt".`);

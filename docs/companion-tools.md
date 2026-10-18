@@ -18,9 +18,14 @@ the README's closing note).
 
 Method: read-only static inspection (`rea inspect-managed-artifact` / `inspect-managed-members`,
 plus targeted string-literal scans) of the extracted payloads and of the on-disk installs, plus the
-package feed's activity documentation. The Windows install was read in place and never written to.
-Scale worth noting: the automation core's browser-driver assembly alone declares 1 922 types /
-10 520 methods; the design side ships a dedicated package for recovery configuration (25.10.x line).
+package feed's activity documentation, plus REA's JavaScript application analysis for the Electron
+recorder. The Windows install was read in place and never written to. The wall-to-wall pass (every
+extracted family, including the installed Studio and the orchestrator payload's assembly band):
+**2 636 files read, 2 045 managed assemblies (924 distinct names), 591 native or not managed** —
+orchestrator, Studio, updater, robot, action-center payloads among them. Scale worth noting: the
+automation core's browser-driver assembly alone declares 1 922 types / 10 520 methods, and the
+selector/healing engine assembly (26.10.5 line) declares 4 101 types / 30 819 methods;
+the design side ships a dedicated package for recovery configuration (25.10.x line).
 
 ## Adopted: target healing (`heal`)
 

@@ -85,7 +85,7 @@ mail       send receive                                           (SMTP via node
 pdf        readText                                               (native text via pdftotext)
 gsheet     append read                                            (Google Sheets v4 REST)
 hitl       ask                                                    (file-based prompt; `rpa hitl answer`)
-api        request
+api        request load
 desktop    move click doubleClick rightClick type scroll pressKey drag clipboardCopy
            screenshot waitForImage clickImage uia                 (uia = PowerShell UI Automation, Windows)
 ocr        recognize
@@ -108,6 +108,22 @@ the same batch:
 ```
 
 prints `[info] {process=Invoice, transaction=tx-1} processing tx-1`.
+
+`api.load` is a load check that lives *inside* a workflow — VUs × iterations (a duration also caps
+it), latency percentiles and an error rate, no external tool in the loop:
+
+```jsonc
+{ "type": "api", "action": "load", "url": "https://api.example/health",
+  "vus": 4, "iterations": 40, "expectStatus": 200, "saveAs": "load" }
+```
+
+```
+[info] api.load GET https://api.example/health → 40 request(s) in 129 ms (310.1 rps), p50 11 ms, p95 18 ms, 0 error(s)
+```
+
+The same 4×40 against the same endpoint with **k6**: 369 rps, p95 13.8 ms — the difference is
+fetch overhead, and the point is that the numbers sit in the flow next to the steps they protect.
+A non-2xx does not throw here: it is counted, because that is the measurement.
 
 ### Targeting
 
@@ -226,6 +242,7 @@ built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 | Targeting | strict → fuzzy (scored attributes) → anchor (geometry) → idx, with the matching method logged |
 | Recovery | `heal: off/recommend/auto` on a target or step (`--heal` for the run): a failed target re-scores the page locally and reports — or applies — the fix |
 | Diagnostics | `rpa doctor` — collectors (runtime, modules, browser, session, tools, project), profiles, report/zip |
+| Load checks | `api.load` — VUs × iterations (or a duration) in-flow; p50/p95/p99 + error rate, cross-checked against a real k6 run |
 | Input | Playwright drives the real browser; desktop steps are hardware-level via nut.js — one engine, not four modes |
 | Step options | `timeoutMs`, `delayBeforeMs`, `delayAfterMs`, `continueOnError`, `retry` |
 | Recording | `rpa record <url>` — click through a page, get a draft workflow (unique-id targets first, fuzzy always); `rpa pick` for one element |
@@ -252,16 +269,19 @@ retry/final-attempt rule, checks that must not heal),
 `test/doctor.test.ts` (collector shape, profiles, project validation, the report zip),
 `test/record.test.ts` (event→step rules: merging, double-click collapse, target shapes; then a real
 session recorded and replayed by a fresh engine),
+`test/api-load.test.ts` (VUs × iterations honoured against a counting server; percentiles from real
+latencies; failures measured, not thrown),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
 
 ### Verified
 
-- `npm test` — 96/96, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
+- `npm test` — 100/100, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
   protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
   the queue against its own file store, healing against a page whose element id actually changed,
-  recording against a page driven like a user then replayed by a fresh engine.
+  recording against a page driven like a user then replayed by a fresh engine, `api.load` against a
+  server that counts its own requests.
 - CLI walk-through (2026-10-18): a workflow targeting the stale `#save-v2` ran `--heal auto` —
   `[warn] target healed … resemblance: id 'save-v2' ≈ 'save-v3' (score 0.86)` — and **Passed** in
   952 ms with 1 heal recorded in `--report`; `--heal off` on the same file failed plainly.
@@ -270,6 +290,10 @@ session recorded and replayed by a fresh engine),
 - Recording walk-through (2026-10-18): a 4-step checkout session — open → type → select → click —
   recorded with strict `[id="…"]` targets plus fuzzy fallbacks, and `rpa run recorded.json` replayed
   it: **Passed** in 333 ms, every target found by its strict selector.
+- Load cross-check (2026-10-18), same endpoint, 4 VUs × 40 iterations: `api.load` reported
+  **310 rps / p95 18 ms / 0 errors** in-flow; a real **k6** run reported 369 rps / p95 13.8 ms —
+  the gap is client overhead, and the numbers agree. Lane coverage and the road to the rest
+  (mobile, Office, SAP) live in `docs/automation-lanes.md`.
 - Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
   (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
   a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s
@@ -293,7 +317,7 @@ src/cli.ts          run / validate / activities / ui / pick / doctor / init / qu
 src/ui/server.ts    the Studio server (API + SSE run stream + static SPA)
 ui/                 the Studio page (index.html, app.js, style.css) — no build step
 examples/           a web workflow and a desktop+OCR workflow
-docs/               design.md, companion-tools.md
+docs/               design.md, companion-tools.md, automation-lanes.md
 ```
 
 Personal project. The workflow format, engine, templates and docs here are original work; no code,

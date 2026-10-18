@@ -15,6 +15,7 @@
  * The project API key is used exactly once (enrolment) and never stored; Aro rotates the machine
  * key on every enrolment, so nothing long-lived sits on the machine.
  */
+import { spawnSync } from 'node:child_process';
 import { Engine, formatLogLine, type LogLine } from '../engine.js';
 import { parseWorkflow, type Step } from '../model.js';
 
@@ -32,6 +33,11 @@ export interface AroRobotOptions {
   heartbeatSeconds?: number;
   claimWaitSeconds?: number;
   headless?: boolean;
+  /**
+   * The folder a dispatched flow resolves its project-relative paths in (`config.load`, `invoke`,
+   * files, the queue). Defaults to the robot's working directory.
+   */
+  baseDir?: string;
 }
 
 /** A flow job as Aro publishes it. The AI endpoint travels inside the job — there is no host credential. */
@@ -64,6 +70,23 @@ export interface PreflightReport {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** Is a command on PATH? Used to prove a capability that depends on a binary, not a module. */
+function hasBinary(command: string): boolean {
+  return spawnSync(command, ['-v'], { stdio: 'ignore' }).error === undefined;
+}
+
+/**
+ * Every step family this engine implements. A robot declares all of them by default and the probe
+ * decides which ones the host can actually run, which is the pair an orchestrator shows and routes
+ * on: `declared` is a request, `proved` is what loaded here.
+ */
+export const ENGINE_CAPABILITIES = [
+  'web', 'control', 'api', 'queue', 'excel', 'file', 'data', 'config', 'mail', 'pdf', 'gsheet', 'hitl'
+] as const;
+
+/** Families the engine runs with nothing installed — proved by existing, not by loading a module. */
+const BUILT_IN_CAPABILITIES = ['api', 'control', 'queue', 'excel', 'file', 'data', 'config', 'gsheet', 'hitl'];
+
 export class AroRobot {
   private robotId = '';
   private machineKey = '';
@@ -74,7 +97,7 @@ export class AroRobot {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: AroRobotOptions) {
-    this.declared = options.capabilities ?? ['web'];
+    this.declared = options.capabilities ?? [...ENGINE_CAPABILITIES];
     this.robotId = options.robotId ?? '';
     this.machineKey = options.robotKey ?? '';
   }
@@ -83,6 +106,10 @@ export class AroRobot {
    * Which capabilities this host actually holds. Declared is what the operator asked for; proved is
    * what loaded — an orchestrator routes on the proved set, so a machine without a desktop display
    * is never handed a desktop flow.
+   *
+   * The families a transactional project uses are proved by *running the engine*: `queue`, `excel`,
+   * `file`, `data`, `config`, `gsheet` and `hitl` need nothing installed. `mail` needs nodemailer or
+   * imapflow, `pdf` needs the poppler binary, and those two are proved only when they are here.
    */
   static async probe(declared: string[]): Promise<string[]> {
     const proved: string[] = [];
@@ -97,9 +124,11 @@ export class AroRobot {
     if (declared.includes('web') && (await loadable('playwright'))) proved.push('web');
     if (declared.includes('desktop') && (await loadable('@nut-tree-fork/nut-js'))) proved.push('desktop');
     if (declared.includes('ocr') && (await loadable('tesseract.js'))) proved.push('ocr');
+    if (declared.includes('mail')
+      && ((await loadable('nodemailer')) || (await loadable('imapflow')))) proved.push('mail');
+    if (declared.includes('pdf') && hasBinary('pdftotext')) proved.push('pdf');
     for (const capability of declared) {
-      // api/control steps need nothing installed, so they are proved by existing at all.
-      if ((capability === 'api' || capability === 'control') && !proved.includes(capability)) proved.push(capability);
+      if (BUILT_IN_CAPABILITIES.includes(capability) && !proved.includes(capability)) proved.push(capability);
     }
     return proved;
   }
@@ -248,8 +277,8 @@ export class AroRobot {
       headless: this.options.headless ?? true,
       variables,
       // A dispatched definition carries no folder, so project-relative paths (config, invoke,
-      // queue, files) resolve against the robot's working directory.
-      baseDir: process.cwd(),
+      // queue, files) resolve against the robot's own project folder.
+      baseDir: this.options.baseDir ?? process.cwd(),
       onLog: (line) => this.shipLog(task.jobId, line)
     });
 

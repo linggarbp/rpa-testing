@@ -68,7 +68,11 @@ Everything the engine does is cross-platform Node; the differences are the ones 
 
 Capabilities are *proved*, not claimed: `rpa robot` probes which modules actually load and reports
 that set to the orchestrator, so a machine without a desktop module is never handed a desktop flow.
-`rpa robot --once` prints the declared/proved pair.
+The engine families (`queue`, `excel`, `file`, `data`, `config`, `gsheet`, `hitl`) are proved by the
+engine itself — they need nothing installed — while `mail` and `pdf` are proved only where
+nodemailer/imapflow or the `pdftotext` binary are present. A robot therefore declares all twelve
+families by default and the orchestrator routes on what it proved, so a flow it cannot run is refused
+at dispatch instead of failing mid-run. `rpa robot --once` prints the declared/proved pair.
 
 ## Activities
 
@@ -214,7 +218,8 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/pack.test.ts` (pack → run from the archive; a tampered file refused),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
-`test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
+`test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator,
+including a dispatched `queue.addItem` flow that is asserted on the queue file it wrote).
 
 ### Verified
 

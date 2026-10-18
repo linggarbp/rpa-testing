@@ -12,7 +12,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Engine, formatLogLine } from './engine.js';
 import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS } from './model.js';
-import { AroRobot } from './robot/aro.js';
+import { AroRobot, ENGINE_CAPABILITIES } from './robot/aro.js';
 import { packProject, unpack } from './pack.js';
 import { QueueStore } from './store.js';
 import { scaffoldBasic, scaffoldTransactional } from './templates.js';
@@ -388,7 +388,7 @@ async function main(): Promise<number> {
         ...(values(flags, 'robot-key')[0] ? { robotKey: values(flags, 'robot-key')[0]! } : {}),
         name: values(flags, 'name')[0] ?? process.env.HOSTNAME ?? 'rpa-testing',
         mode: values(flags, 'mode')[0] ?? 'Unattended',
-        capabilities: (values(flags, 'capabilities')[0] ?? 'web,control,api').split(',').map((c) => c.trim()).filter(Boolean),
+        capabilities: (values(flags, 'capabilities')[0] ?? ENGINE_CAPABILITIES.join(',')).split(',').map((c) => c.trim()).filter(Boolean),
         headless: flags.headed !== true
       });
 

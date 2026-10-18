@@ -69,7 +69,11 @@ Everything the engine does is cross-platform Node; the differences are the ones 
 
 Capabilities are *proved*, not claimed: `rpa robot` probes which modules actually load and reports
 that set to the orchestrator, so a machine without a desktop module is never handed a desktop flow.
-`rpa robot --once` prints the declared/proved pair.
+The engine families (`queue`, `excel`, `file`, `data`, `config`, `gsheet`, `hitl`) are proved by the
+engine itself — they need nothing installed — while `mail` and `pdf` are proved only where
+nodemailer/imapflow or the `pdftotext` binary are present. A robot therefore declares all twelve
+families by default and the orchestrator routes on what it proved, so a flow it cannot run is refused
+at dispatch instead of failing mid-run. `rpa robot --once` prints the declared/proved pair.
 
 ## Activities
 
@@ -234,7 +238,7 @@ report with its source line:
 | Recording | `rpa pick` indicates one element; workflows are authored as JSON |
 | Transaction loop | `rpa init --template transactional` — one file per concern, local queue, exception classes |
 | Orchestrator | **Aro**: robots, flows, dispatch, logs, assets — this repo is the robot |
-| Queues | local `queue.*` with dispatcher/performer semantics; an Aro queue service is the next orchestrator feature |
+| Queues | local `queue.*` with dispatcher/performer semantics (Aro has a work-queue store; a robot-facing claim/status API is the missing half) |
 | Credentials | `${secret.NAME}` resolved once before step 1 (Aro's asset vault on a robot) |
 | Still open | a full recorder, ML document understanding (use OCR + regex) |
 
@@ -253,21 +257,23 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/import.test.ts` (a synthetic dispatcher/performer pair imported and run against the queue; the porting report),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API — including the Human tab answering a waiting `hitl.ask` — and the page driven in a real browser),
-`test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
+`test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator,
+including a dispatched `queue.addItem` flow that is asserted on the queue file it wrote).
 
 ### Verified
 
-- `npm test` — 83/83: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
+- `npm test` — 84/84: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator protocol
   suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice, the queue
   against its own file store, a package against a tampered archive, a legacy export against a synthetic
-  dispatcher/performer pair that is imported and then run, the Studio's panels in a real browser (a
-  pending question answered, an item closed from its row, the pick button), and the pick code path
-  against a real chromium click.
-- Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
-  (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
-  a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s
-  (run `141c9b52-4bed-45b9-8dcf-e4d7d381411c`), with all 9 step-log lines readable from Aro's run
-  history. Aro's Robots list showed it `Online` with `caps=["api","control","web"]`.
+  dispatcher/performer pair that is imported and then run, the Studio's panels in a real browser, the
+  pick code path against a real chromium click, and a dispatched `queue.addItem` →
+  `getTransactionItem` → `setStatus Successful` flow asserted on the queue file the run wrote.
+- Live against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-families`
+  (`8c638d57-832b-4be7-9d12-2961cfeb1e2e`) enrolled, declared/proved all twelve families
+  (`api, config, control, data, excel, file, gsheet, hitl, mail, pdf, queue, web` — Aro's Robots list
+  shows exactly that set) and heartbeat was accepted; a flow dispatched from Aro ran its 5 steps and
+  **finalized Passed** (run `62797c08-4f90-4894-b616-b8f91046fbd4`). Earlier in the day the same
+  round-trip proved the protocol with `rpa-testing-verify` (`web, control, api`, 9 step-log lines).
 
 ## Layout
 

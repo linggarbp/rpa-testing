@@ -5,9 +5,14 @@
  * is asserted to have been called with the headers Aro's own agent sends.
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { AroRobot } from '../src/robot/aro.js';
+import { ENGINE_CAPABILITIES, AroRobot } from '../src/robot/aro.js';
+import { QueueStore } from '../src/store.js';
 
 interface Call {
   method: string;
@@ -185,5 +190,51 @@ test('structured log fields travel in the existing log batch, and unknown keys d
     const line = lines.find((entry) => entry.message === 'processing tx-1');
     assert.ok(line, lines.map((entry) => entry.message).join(' | '));
     assert.deepEqual(line?.fields, { process: 'Invoice', transaction: 'tx-1' });
+  });
+});
+
+test('the robot proves every engine family it can run, and a dispatched queue flow really runs', async () => {
+  await withFakeAro(async (base, state) => {
+    // The project folder a dispatched flow resolves in (queue files, config, invoke).
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'rpa-robot-flow-'));
+    const robot = new AroRobot({ apiUrl: base, projectId: 'p', apiKey: 'project-key', name: 'test-host', baseDir: projectDir });
+    const report = await robot.preflight();
+
+    // What an orchestrator routes on: the families this host can actually run are the proved ones.
+    assert.deepEqual(report.declared, [...ENGINE_CAPABILITIES]);
+    for (const capability of ['web', 'control', 'queue', 'excel', 'file', 'data', 'config', 'gsheet', 'hitl']) {
+      assert.ok(report.proved.includes(capability), `${capability} should be proved (${report.proved.join(', ')})`);
+    }
+    // mail and pdf are proved only when this host has the module or the binary.
+    if (report.proved.includes('pdf')) {
+      assert.equal(spawnSync('pdftotext', ['-v'], { stdio: 'ignore' }).error, undefined);
+    }
+
+    const task = (await robot.claimOnce(1))!;
+    const queueFlow = {
+      ...task,
+      definition: JSON.stringify([
+        { type: 'queue', action: 'addItem', queue: 'InvoiceQueue', reference: 'INV-1', data: { amount: '10' } },
+        { type: 'queue', action: 'getTransactionItem', queue: 'InvoiceQueue', saveAs: 'TransactionItem' },
+        { type: 'control', action: 'log', message: 'claimed ${TransactionItem.reference}' },
+        { type: 'queue', action: 'setStatus', queue: 'InvoiceQueue', status: 'Successful', reason: 'verified' }
+      ])
+    };
+
+    assert.equal(await robot.runTask(queueFlow), 'Passed');
+
+    // The queue file in the robot's project folder is the proof, not the log line.
+    const items = await new QueueStore(projectDir).items('InvoiceQueue');
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.status, 'Successful');
+    assert.equal(items[0]?.reference, 'INV-1');
+    assert.equal(items[0]?.reason, 'verified');
+
+    const shipped = state.calls.filter((call) => call.path.endsWith('/logs'))
+      .flatMap((call) => (call.body as { lines: Array<{ message: string }> }).lines)
+      .map((line) => line.message);
+    assert.ok(shipped.some((line) => line.includes('claimed INV-1')), shipped.join(' | '));
+    const finalized = state.finalized[0] as { body: { status: string } };
+    assert.equal(finalized.body.status, 'Passed');
   });
 });

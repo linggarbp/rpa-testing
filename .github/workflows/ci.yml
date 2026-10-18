@@ -26,6 +26,9 @@ jobs:
       - name: Install Chromium (web steps)
         run: npx playwright install --with-deps chromium
 
+      - name: Install poppler (pdf.readText)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
       - name: Tests (type-check, unit, chromium E2E, UI E2E, robot protocol)
         run: npm test
         env:

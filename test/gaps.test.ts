@@ -4,6 +4,7 @@
  * Windows UIA bridge. Document Understanding stays a gap on purpose — it needs trained models.
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp } from 'node:fs/promises';
 import { writeFile } from 'node:fs/promises';
 import net from 'node:net';
@@ -48,7 +49,10 @@ function buildPdf(lines: string[]): Buffer {
   return Buffer.from(pdf, 'latin1');
 }
 
-test('pdf.readText extracts the native text of a generated invoice', async () => {
+/** Native PDF text is a `pdftotext` call, so the suite skips (not fails) where poppler is absent. */
+const hasPdftotext = spawnSync('pdftotext', ['-v'], { stdio: 'ignore' }).error === undefined;
+
+test('pdf.readText extracts the native text of a generated invoice', { skip: hasPdftotext ? false : 'pdftotext (poppler-utils) is not on PATH' }, async () => {
   const dir = await project();
   await writeFile(path.join(dir, 'invoice.pdf'), buildPdf(['Sample Invoice', 'Invoice Number 19070', 'Total 2210']));
 

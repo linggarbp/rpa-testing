@@ -35,6 +35,11 @@ jobs:
           # The mail test skips itself when no SMTP server is reachable, which is the case in CI.
           CI: 'true'
 
+      - name: The same headless suites under Jest and Vitest
+        run: npm run test:runners
+        env:
+          CI: 'true'
+
   naming:
     name: Naming policy
     runs-on: ubuntu-latest

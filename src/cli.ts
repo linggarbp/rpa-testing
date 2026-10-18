@@ -64,7 +64,8 @@ function values(flags: Flags, key: string): string[] {
 
 const HELP = `rpa-testing — a small, honest RPA toolkit
 
-  rpa run <workflow.json|package.rpapkg>  run a workflow (--headed, --var name=value, --report out.json)
+  rpa run <workflow.json|package.rpapkg>  run a workflow (--headed, --var name=value, --report out.json,
+                               --heal off|recommend|auto — what a failed target may recover to)
   rpa validate <workflow.json…>  validate without running
   rpa import <file.xaml|project.json> --out <dir>   convert a legacy export (writes PORTING-REPORT.md)
   rpa pack <dir> --out <file.rpapkg>  zip a project with a manifest (--entry, --name, --version)
@@ -75,6 +76,7 @@ const HELP = `rpa-testing — a small, honest RPA toolkit
   rpa hitl                     list pending human-in-the-loop questions
   rpa hitl answer <id> <value>  answer one (what hitl.ask waits for)
   rpa pick <url>               click an element, get its target JSON (--out target.json)
+  rpa doctor                   check this machine (--profile default|robot|web, --out report.zip, --json)
   rpa ui                       the Studio in a browser (--project <dir>, --port N, --no-open)
   rpa robot --api <url> --project <id> [--api-key <key> | --robot-id <id> --robot-key <key>]
             [--name <host>] [--capabilities web,desktop,ocr] [--mode Attended|Unattended] [--once]
@@ -163,11 +165,18 @@ async function main(): Promise<number> {
           if (index > 0) overrides[pair.slice(0, index)] = pair.slice(index + 1);
         }
 
+        const healFlag = values(flags, 'heal')[0];
+        if (healFlag !== undefined && !['off', 'recommend', 'auto'].includes(healFlag)) {
+          console.error(`unknown --heal "${healFlag}" — pick off | recommend | auto.`);
+          return 2;
+        }
+
         const engine = new Engine({
           headless: flags.headed !== true,
           variables: overrides,
           // Paths inside the workflow are project-relative: invoke, config.load, files, the queue.
           baseDir: path.dirname(source),
+          ...(healFlag ? { heal: healFlag as 'off' | 'recommend' | 'auto' } : {}),
           onLog: (line) => {
             if (flags.json !== true) console.log(formatLogLine(line));
           }
@@ -180,9 +189,9 @@ async function main(): Promise<number> {
             await writeFile(report, JSON.stringify(result, null, 2));
             console.log(`report written to ${report}`);
           }
-          if (flags.json === true) console.log(JSON.stringify({ status: result.status, error: result.error, durationMs: result.durationMs, vars: result.vars }, null, 2));
+          if (flags.json === true) console.log(JSON.stringify({ status: result.status, error: result.error, durationMs: result.durationMs, vars: result.vars, heals: result.heals }, null, 2));
         }
-        console.log(`${result.status}${result.error ? ` — ${result.error}` : ''} (${result.stepsRun} step(s), ${result.durationMs} ms)`);
+        console.log(`${result.status}${result.error ? ` — ${result.error}` : ''} (${result.stepsRun} step(s), ${result.durationMs} ms)${result.heals.length > 0 ? ` · ${result.heals.length} heal(s)` : ''}`);
         return result.status === 'Passed' ? 0 : 1;
       } finally {
         if (cleanup) await cleanup();
@@ -237,8 +246,34 @@ async function main(): Promise<number> {
         ['pdf', PDF_ACTIONS], ['gsheet', GSHEET_ACTIONS], ['hitl', HITL_ACTIONS]
       ];
       for (const [type, actions] of groups) console.log(`${type.padEnd(10)} ${actions.join(', ')}`);
-      console.log('\nEvery step also accepts: timeoutMs, retry, retryDelayMs, continueOnError, delayBeforeMs, delayAfterMs, saveAs.');
+      console.log('\nEvery step also accepts: timeoutMs, retry, retryDelayMs, continueOnError, delayBeforeMs, delayAfterMs, saveAs, heal (off|recommend|auto).');
       return 0;
+    }
+
+    case 'doctor': {
+      const { runDoctor, DOCTOR_PROFILES } = await import('./doctor.js');
+      const profile = (values(flags, 'profile')[0] ?? 'default').toLowerCase();
+      if (!(DOCTOR_PROFILES as readonly string[]).includes(profile)) {
+        console.error(`unknown profile "${profile}" — pick one of: ${DOCTOR_PROFILES.join(', ')}`);
+        return 2;
+      }
+      const out = values(flags, 'out')[0];
+      const report = await runDoctor({
+        profile: profile as (typeof DOCTOR_PROFILES)[number],
+        ...(values(flags, 'project')[0] ? { projectDir: values(flags, 'project')[0]! } : {}),
+        ...(out ? { out } : {})
+      });
+      if (flags.json === true) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        for (const collector of report.collectors) {
+          console.log(`${collector.status.padEnd(4)} ${collector.name}`);
+          for (const [key, value] of Object.entries(collector.facts)) console.log(`       ${key}: ${value}`);
+          for (const note of collector.notes) console.log(`       · ${note}`);
+        }
+        console.log(`\nprofile ${report.profile} — ${report.collectors.length} collector(s), ${report.summary.warnings} warning(s), ${report.summary.problems} problem(s)${out ? ` · ${out}` : ''}`);
+      }
+      return report.summary.problems > 0 ? 1 : 0;
     }
 
     case 'queue': {

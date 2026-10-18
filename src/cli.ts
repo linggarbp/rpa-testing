@@ -76,6 +76,8 @@ const HELP = `rpa-testing — a small, honest RPA toolkit
   rpa hitl                     list pending human-in-the-loop questions
   rpa hitl answer <id> <value>  answer one (what hitl.ask waits for)
   rpa pick <url>               click an element, get its target JSON (--out target.json)
+  rpa record <url>             record a browser session into a draft workflow (--out draft.json,
+                               --max-seconds N, --headless)
   rpa doctor                   check this machine (--profile default|robot|web, --out report.zip, --json)
   rpa ui                       the Studio in a browser (--project <dir>, --port N, --no-open)
   rpa robot --api <url> --project <id> [--api-key <key> | --robot-id <id> --robot-key <key>]
@@ -248,6 +250,50 @@ async function main(): Promise<number> {
       for (const [type, actions] of groups) console.log(`${type.padEnd(10)} ${actions.join(', ')}`);
       console.log('\nEvery step also accepts: timeoutMs, retry, retryDelayMs, continueOnError, delayBeforeMs, delayAfterMs, saveAs, heal (off|recommend|auto).');
       return 0;
+    }
+
+    case 'record': {
+      const url = positional[0];
+      if (!url) {
+        console.error('rpa record <url> --out <draft.json> [--max-seconds N] [--headless]');
+        return 2;
+      }
+      const out = values(flags, 'out')[0] ?? 'recorded.json';
+      const maxSeconds = Number(values(flags, 'max-seconds')[0] ?? 900);
+      let playwright: typeof import('playwright');
+      try {
+        playwright = await import('playwright');
+      } catch {
+        console.error('rpa record needs playwright: npm i playwright && npx playwright install chromium');
+        return 2;
+      }
+      const { startRecording } = await import('./recorder.js');
+      const browser = await playwright.chromium.launch({ headless: flags.headless === true });
+      try {
+        const page = await browser.newPage();
+        const recorder = await startRecording(page, { maxMs: Math.max(5, maxSeconds) * 1000 });
+        console.log(`recording ${url} — click through the page; Stop (bottom-right) ends it. ${flags.headless === true ? '' : 'The browser window is yours to drive.'}`.trim());
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        const recorded = await recorder.stop();
+        if (recorded.steps.length === 0) {
+          console.error('nothing was recorded.');
+          return 1;
+        }
+        const workflow = { name: `recorded: ${url}`, steps: recorded.steps.map((entry) => entry.step) };
+        const errors = validateWorkflow(parseWorkflow(JSON.stringify(workflow)));
+        if (errors.length > 0) {
+          console.error(`the draft did not validate (that is a recorder bug, please report it):\n${errors.join('\n')}`);
+          return 1;
+        }
+        await mkdir(path.dirname(path.resolve(out)), { recursive: true });
+        await writeFile(out, `${JSON.stringify(workflow, null, 2)}\n`);
+        for (const [index, entry] of recorded.steps.entries()) console.log(`${String(index + 1).padStart(2)}. ${entry.description}`);
+        for (const note of recorded.dropped) console.log(`    · ${note}`);
+        console.log(`\nrecorded ${recorded.steps.length} step(s) → ${out} — review it, then: rpa run ${out}`);
+        return 0;
+      } finally {
+        await browser.close().catch(() => {});
+      }
     }
 
     case 'doctor': {

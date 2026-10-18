@@ -66,12 +66,40 @@ Adopted as `rpa doctor`:
 Cross-platform by construction: platform differences appear as facts in the report, never as
 crashes. Code: `src/doctor.ts`. Tests: `test/doctor.test.ts`.
 
+## Adopted: the web recorder (`rpa record`)
+
+Observed model (REA's JavaScript application graph over the recorder's Electron app — evidence
+`ev_08052d0d…`: 541 parsed files, 146 424 AST nodes, 5 170 findings, 540 modules; boundary summary:
+8 browser windows, 4 preload entry points, 64 main IPC handlers, 31 paired renderer transmissions,
+1 resolved native addon; the graph itself states its truncation limits):
+
+- a **unified recorder** with a driver abstraction (`unified-recorder/contracts`: rec-operation,
+  selectorInfo, selectorValidationResult, extensionType, windowType) over per-OS capture;
+- an **event-filter layer** (`filters/`: double-click, keyboard-event, mouse-documentation,
+  window-handle, allow/deny) deciding what becomes a step;
+- a **trigger manager** (hotkey start/stop) and per-step media (`screenshot.js`);
+- **two processors over one capture**: documentation output vs RPA output;
+- output mappers: Workflow-file export, Word/HTML/CSV exporters, and a document format with explicit
+  version upgrades.
+
+Adopted as `rpa record` (web only, deliberately small):
+
+- captures click / text input / select change / navigation from the page itself;
+- the same filter instincts: double-clicks collapse, our own overlay and an `ignoreSelectors` list
+  never become steps, bare body clicks are dropped;
+- typing merges per field keeping the step's first position, with the latest value;
+- targets follow the anchor order the engine resolves: unique id → unique name → positional path,
+  plus the fuzzy spec (and a short-text hint) always, so healing has something to work with;
+- the draft is validated before it is written; stop is an overlay button, with a deadline.
+
+Not adopted (yet): global OS input hooks (a different program), per-step screenshots, the document
+exporters, the Workflow-file (XAML) mapper, allow/deny lists, hotkey triggers.
+
 ## Seen, deliberately not adopted (candidate work)
 
-- **Recorder** — the recorder app is an Electron shell over global input hooks plus per-step
-  screenshots, with document templates. A *web* recorder built on the same idea (capture DOM
-  events, emit draft steps) is the honest port; it stays out of this branch — `rpa pick` is the
-  indicate flow for now. (The README already lists a full recorder as intentionally open.)
+- **Recorder parts not ported** — per-step screenshots, document exporters (Word/HTML/CSV), the
+  workflow-file mapper the recorder uses for its export, allow/deny lists, hotkey triggers (see the
+  adopted section above for what `rpa record` took and left).
 - **Trigger subsystem** — file-change, queue, time and process triggers with a scope wrapper.
   Would map onto a `rpa watch` mode; bigger than one branch.
 - **Storage buckets** — orchestrator-side file storage (upload/download/list/read/write text).
@@ -85,6 +113,11 @@ crashes. Code: `src/doctor.ts`. Tests: `test/doctor.test.ts`.
 - **Selector migration** — the migration tool rewrites legacy selector arguments into modern ones.
   Reading the legacy form already works (`src/selector-chain.ts`); an author-time converter
   (`rpa upgrade`) is the follow-up.
+- **Web-driver selector engine** — the browser driver delegates fuzzy scoring to its content script:
+  `max(0.999 × LevenshteinRatio, 0.95 × TokenSortRatio)` compared against a `fuzzyLevel`, with a
+  `matchingType` switch picking exact/full/fuzzy matchers, plus per-framework table-row shortcuts
+  (`ui5-tableRow`, `aw-tablerow`, `sapweb-tablerow`). Our engine's `similarity()` stays its own, but
+  token-sort scoring is a candidate upgrade if fuzzy misses show up in practice.
 - **Activity catalog gaps** — the System activity docs (159 entries) list data-table ops, collection
   ops, date/text helpers, `InvokeProcess`, timers and more that this engine does not have yet (the
   engine ships 69 actions across 15 types; healing and doctor are this branch's additions).

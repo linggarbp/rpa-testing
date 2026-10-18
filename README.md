@@ -191,6 +191,8 @@ rpa pack <project> --out <file.rpapkg>  zip a project with a manifest (--entry, 
 rpa activities                 the catalog above
 rpa ui                         Studio in the browser (--project <dir>, --port N, --no-open)
 rpa pick <url>                 click an element, get its target JSON (--out target.json)
+rpa record <url>               record a browser session into a draft workflow (--out draft.json,
+                               --max-seconds N, --headless)
 rpa doctor                     check this machine: collectors + profiles (--profile default|robot|web,
                                --project <dir>, --out report.zip|report.json, --json)
 rpa init <dir>                 scaffold (--template basic|transactional)
@@ -226,7 +228,7 @@ built it. Local state (`.rpa/`, `runs/`) is deliberately not packaged.
 | Diagnostics | `rpa doctor` — collectors (runtime, modules, browser, session, tools, project), profiles, report/zip |
 | Input | Playwright drives the real browser; desktop steps are hardware-level via nut.js — one engine, not four modes |
 | Step options | `timeoutMs`, `delayBeforeMs`, `delayAfterMs`, `continueOnError`, `retry` |
-| Recording | `rpa pick` indicates one element; workflows are authored as JSON |
+| Recording | `rpa record <url>` — click through a page, get a draft workflow (unique-id targets first, fuzzy always); `rpa pick` for one element |
 | Transaction loop | `rpa init --template transactional` — one file per concern, local queue, exception classes |
 | Orchestrator | **Aro**: robots, flows, dispatch, logs, assets — this repo is the robot |
 | Queues | local `queue.*` with dispatcher/performer semantics; an Aro queue service is the next orchestrator feature |
@@ -248,20 +250,26 @@ The suites: `test/unit.test.ts` (targeting maths, model, control flow, resilienc
 `test/heal.test.ts` (a changed id healed by resemblance, the recommend default, the `--heal` cap,
 retry/final-attempt rule, checks that must not heal),
 `test/doctor.test.ts` (collector shape, profiles, project validation, the report zip),
+`test/record.test.ts` (event→step rules: merging, double-click collapse, target shapes; then a real
+session recorded and replayed by a fresh engine),
 `test/gaps.test.ts` (mail, PDF, Sheets, HITL, state machine, UIA),
 `test/ui.e2e.test.ts` (the Studio's API and the page driven in a real browser),
 `test/robotProtocol.test.ts` (enrol/heartbeat/claim/logs/cancel/finalize against a fake orchestrator).
 
 ### Verified
 
-- `npm test` — 92/92, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
+- `npm test` — 96/96, 0 skipped: type-check + unit + real-chromium E2E + UI E2E + a fake-orchestrator
   protocol suite. Mail is exercised against a real SMTP server, PDF text against a generated invoice,
-  the queue against its own file store, healing against a page whose element id actually changed.
+  the queue against its own file store, healing against a page whose element id actually changed,
+  recording against a page driven like a user then replayed by a fresh engine.
 - CLI walk-through (2026-10-18): a workflow targeting the stale `#save-v2` ran `--heal auto` —
   `[warn] target healed … resemblance: id 'save-v2' ≈ 'save-v3' (score 0.86)` — and **Passed** in
   952 ms with 1 heal recorded in `--report`; `--heal off` on the same file failed plainly.
   `rpa doctor --profile robot --project … --out report.zip` reported 6 collectors / 0 warnings /
   0 problems and wrote a zip holding `report.json`.
+- Recording walk-through (2026-10-18): a 4-step checkout session — open → type → select → click —
+  recorded with strict `[id="…"]` targets plus fuzzy fallbacks, and `rpa run recorded.json` replayed
+  it: **Passed** in 333 ms, every target found by its strict selector.
 - Live round-trip against the **dev Aro orchestrator** (2026-10-18): robot `rpa-testing-verify`
   (`9d774ab2-d467-44cc-bd43-f4b60dac0c35`) enrolled, proved `web, control, api`, heartbeat accepted;
   a flow dispatched from Aro to that robot ran and **finalized Passed** in ~0.9 s

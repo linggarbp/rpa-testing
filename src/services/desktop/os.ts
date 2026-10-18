@@ -365,6 +365,12 @@ function run(command: Command, timeoutMs: number): Promise<string> {
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
     child.on('error', error => { clearTimeout(timer); reject(error); });
+    // Most of these commands read no stdin and exit immediately, which closes the pipe under us:
+    // EPIPE on the way in is not a failure of the command, and an unhandled stream error would
+    // take the whole run down (CI caught exactly that).
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE') stderr += `${error.message}\n`;
+    });
     child.on('close', code => {
       clearTimeout(timer);
       if (code === 0) resolve(stdout.trim());

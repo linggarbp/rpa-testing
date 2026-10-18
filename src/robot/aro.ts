@@ -15,7 +15,7 @@
  * The project API key is used exactly once (enrolment) and never stored; Aro rotates the machine
  * key on every enrolment, so nothing long-lived sits on the machine.
  */
-import { Engine, type LogLine } from '../engine.js';
+import { Engine, formatLogLine, type LogLine } from '../engine.js';
 import { parseWorkflow, type Step } from '../model.js';
 
 export interface AroRobotOptions {
@@ -70,7 +70,7 @@ export class AroRobot {
   private declared: string[];
   private proved: string[] = [];
   private busy = false;
-  private readonly logs: Array<{ message: string; type: string; ts: string }> = [];
+  private readonly logs: Array<{ message: string; type: string; ts: string; fields?: Record<string, string> }> = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: AroRobotOptions) {
@@ -283,8 +283,15 @@ export class AroRobot {
   }
 
   private async shipLog(jobId: string, line: LogLine): Promise<void> {
-    console.log(`  [${line.level}] ${line.message}`);
-    this.logs.push({ message: line.message, type: line.level, ts: line.ts });
+    console.log(`  ${formatLogLine(line)}`);
+    // `fields` travels in the batch as an extra key. Aro's log endpoint ignores unknown members
+    // rather than refusing the batch, so a structured line is never a reason to drop a log.
+    this.logs.push({
+      message: line.message,
+      type: line.level,
+      ts: line.ts,
+      ...(line.fields ? { fields: line.fields } : {})
+    });
     if (this.logs.length >= 20) {
       await this.flushLogs(jobId);
       return;

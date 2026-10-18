@@ -10,7 +10,7 @@
  */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { Engine } from './engine.js';
+import { Engine, formatLogLine } from './engine.js';
 import { parseWorkflow, validateWorkflow, WEB_ACTIONS, CONTROL_ACTIONS, API_ACTIONS, DESKTOP_ACTIONS, OCR_ACTIONS, VISION_ACTIONS, QUEUE_ACTIONS, FILE_ACTIONS, EXCEL_ACTIONS, DATA_ACTIONS, CONFIG_ACTIONS, MAIL_ACTIONS, PDF_ACTIONS, GSHEET_ACTIONS, HITL_ACTIONS } from './model.js';
 import { AroRobot } from './robot/aro.js';
 import { QueueStore } from './store.js';
@@ -154,7 +154,7 @@ async function main(): Promise<number> {
         // Paths inside the workflow are project-relative: invoke, config.load, files, the queue.
         baseDir: path.dirname(path.resolve(file)),
         onLog: (line) => {
-          if (flags.json !== true) console.log(`[${line.level}] ${line.message}`);
+          if (flags.json !== true) console.log(formatLogLine(line));
         }
       });
       const result = await engine.run(workflow, {});

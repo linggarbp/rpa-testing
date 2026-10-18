@@ -103,7 +103,8 @@ export interface Workflow {
 
 export const WEB_ACTIONS = [
   'goto', 'click', 'type', 'hover', 'selectOption', 'getText', 'getAttribute',
-  'elementExists', 'waitForElement', 'pressKeys', 'scroll', 'screenshot', 'assertText'
+  'elementExists', 'waitForElement', 'pressKeys', 'scroll', 'screenshot', 'assertText',
+  'extractTable'
 ] as const;
 export const CONTROL_ACTIONS = [
   'delay', 'setVar', 'math', 'log', 'if', 'switch', 'repeat', 'while', 'foreach',
@@ -241,6 +242,10 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
       return;
     }
 
+    if (step.type === 'web' && action === 'extractTable' && String(step.table ?? '').trim() === '') {
+      errors.push(`${name} (web.extractTable) needs a "table" — the CSS selector of the table.`);
+    }
+
     const body = (property: string) => {
       const branch = step[property];
       if (branch === undefined) return;
@@ -252,6 +257,9 @@ function validateSteps(steps: Step[], label: string, depth: number, errors: stri
     };
 
     if (step.type === 'control') {
+      if (action === 'log' && step.fields !== undefined && (typeof step.fields !== 'object' || Array.isArray(step.fields))) {
+        errors.push(`${name} › fields must be an object of { name: value }.`);
+      }
       if (action === 'if' || action === 'while') {
         if (String(step.condition ?? '').trim() === '') errors.push(`${name} needs a condition.`);
       }

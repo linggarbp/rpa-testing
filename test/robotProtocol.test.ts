@@ -162,3 +162,28 @@ test('a pinned identity skips enrolment entirely', async () => {
     assert.equal(heartbeat?.headers['x-aro-robot-key'], 'pinned-key');
   });
 });
+
+test('structured log fields travel in the existing log batch, and unknown keys do not break it', async () => {
+  await withFakeAro(async (base, state) => {
+    const robot = new AroRobot({ apiUrl: base, projectId: 'p', apiKey: 'project-key', name: 'test-host' });
+    await robot.connect();
+    const task = (await robot.claimOnce(1))!;
+    const structured = {
+      ...task,
+      definition: JSON.stringify([
+        { type: 'control', action: 'setVar', name: 'TransactionItem.id', value: 'tx-1' },
+        {
+          type: 'control', action: 'log', message: 'processing ${TransactionItem.id}',
+          fields: { process: 'Invoice', transaction: '${TransactionItem.id}' }
+        }
+      ])
+    };
+
+    assert.equal(await robot.runTask(structured), 'Passed');
+    const batches = state.calls.filter((call) => call.path.endsWith('/logs'));
+    const lines = batches.flatMap((call) => (call.body as { lines: Array<{ message: string; fields?: Record<string, string> }> }).lines);
+    const line = lines.find((entry) => entry.message === 'processing tx-1');
+    assert.ok(line, lines.map((entry) => entry.message).join(' | '));
+    assert.deepEqual(line?.fields, { process: 'Invoice', transaction: 'tx-1' });
+  });
+});

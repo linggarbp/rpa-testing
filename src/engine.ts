@@ -32,6 +32,15 @@ export interface LogLine {
   level: 'info' | 'error' | 'warn' | 'success';
   message: string;
   ts: string;
+  /** Structured fields from `control.log` — the process/transaction tags a framework adds to a line. */
+  fields?: Record<string, string>;
+}
+
+/** One log line as a human reads it: level, optional `{k=v, …}` fields, then the message. */
+export function formatLogLine(line: LogLine): string {
+  const entries = Object.entries(line.fields ?? {});
+  const fields = entries.length > 0 ? ` {${entries.map(([key, value]) => `${key}=${value}`).join(', ')}}` : '';
+  return `[${line.level}]${fields} ${line.message}`;
 }
 
 export interface EngineOptions {
@@ -344,6 +353,32 @@ export class Engine {
         if (!content.includes(text)) throw new Error(`assertText failed: "${text}" not found on the page`);
         break;
       }
+      case 'extractTable': {
+        // A whole table in one round-trip. The callback runs INSIDE the page and is serialised from
+        // its source, so it has to be self-contained: no imported helpers, no named inner functions
+        // (the bundler's name-preserving transform injects a reference the page cannot resolve).
+        const selector = this.interp(String(step.table ?? ''));
+        if (!selector) throw new Error('web.extractTable needs "table" — the CSS selector of the table.');
+        const locator = page.locator(selector);
+        await locator.first().waitFor({ state: 'attached', timeout })
+          .catch(() => { throw new Error(`web.extractTable: no table matched "${selector}" within ${timeout}ms.`); });
+        const matched = await locator.count();
+        const tables = await locator.evaluateAll((elements: Element[]) => elements
+          .filter((element) => element.tagName === 'TABLE')
+          .map((table) => Array.from((table as HTMLTableElement).rows)
+            .map((row) => Array.from(row.cells).map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim()))));
+        if (tables.length === 0) {
+          throw new Error(`web.extractTable: "${selector}" matched ${matched} element(s), none of them a <table>.`);
+        }
+        const grid = tables[0]!;
+        const rows = this.tableRows(grid, step.headerRow !== false);
+        if (step.saveAs) {
+          this.vars[String(step.saveAs)] = JSON.stringify(rows);
+          this.vars[`${String(step.saveAs)}.count`] = String(rows.length);
+        }
+        await this.log('info', `extractTable ${selector} → ${rows.length} row(s), ${grid[0]?.length ?? 0} column(s)${matched > 1 ? ` (${matched} tables matched; the first was read)` : ''}`);
+        break;
+      }
       default:
         throw new Error(`Unknown web action: ${step.action}`);
     }
@@ -372,6 +407,24 @@ export class Engine {
     await this.log('info', `verified after ${String(step.action)}: ${describeTarget(spec)}`);
   }
 
+  /**
+   * Header-keyed rows from a table's cell grid. `headerRow: false` keys the columns by their index
+   * instead; a duplicate header name gets a numeric suffix so no column is silently dropped.
+   */
+  private tableRows(grid: string[][], headerRow: boolean): Array<Record<string, string>> {
+    if (grid.length === 0) return [];
+    const header = headerRow ? grid[0]! : (grid[0] ?? []).map((_, index) => String(index));
+    const body = headerRow ? grid.slice(1) : grid;
+    const keys: string[] = [];
+    for (const [index, cell] of header.entries()) {
+      const base = cell.trim() !== '' ? cell.trim() : `Column${index + 1}`;
+      let key = base;
+      for (let n = 2; keys.includes(key); n++) key = `${base}_${n}`;
+      keys.push(key);
+    }
+    return body.map((cells) => Object.fromEntries(keys.map((key, index) => [key, cells[index] ?? ''])));
+  }
+
   private async elementExists(step: Step): Promise<boolean> {
     const page = await this.pageFor();
     const target = targetFromStep(step);
@@ -395,7 +448,7 @@ export class Engine {
         this.vars[String(step.name)] = this.interp(String(step.value ?? ''));
         break;
       case 'log':
-        await this.log('info', this.interp(String(step.message ?? '')));
+        await this.log('info', this.interp(String(step.message ?? '')), this.logFields(step));
         break;
       case 'if': {
         const branch = this.evalCondition(String(step.condition ?? '')) ? step.then : step.else;
@@ -1173,10 +1226,20 @@ export class Engine {
     return path.join(dir, `${name}.png`);
   }
 
-  private async log(level: LogLine['level'], message: string): Promise<void> {
-    const line: LogLine = { level, message, ts: new Date().toISOString() };
+  private async log(level: LogLine['level'], message: string, fields?: Record<string, string>): Promise<void> {
+    const line: LogLine = { level, message, ts: new Date().toISOString(), ...(fields && Object.keys(fields).length > 0 ? { fields } : {}) };
     this.logs.push(line);
     if (this.options.onLog) await this.options.onLog(line);
+  }
+
+  /** The `fields` map of a log step, interpolated; a non-object or empty map means "no fields". */
+  private logFields(step: Step): Record<string, string> | undefined {
+    const declared = step.fields;
+    if (!declared || typeof declared !== 'object' || Array.isArray(declared)) return undefined;
+    const fields = Object.fromEntries(
+      Object.entries(declared as Record<string, unknown>).map(([key, value]) => [key, this.interp(String(value ?? ''))])
+    );
+    return Object.keys(fields).length > 0 ? fields : undefined;
   }
 
   private async loadOptional<T>(module: string, hint: string): Promise<T> {

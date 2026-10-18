@@ -74,7 +74,7 @@ that set to the orchestrator, so a machine without a desktop module is never han
 
 ```
 web        goto click type hover selectOption getText getAttribute elementExists
-           waitForElement pressKeys scroll screenshot assertText
+           waitForElement pressKeys scroll screenshot assertText extractTable
 control    delay setVar math log if switch repeat while foreach try throw retryScope invoke stateMachine
 queue      addItem getTransactionItem setStatus count list        (local queue, dispatcher/performer semantics)
 excel      readRange writeRange writeCell forEachRow              (CSV native, XLSX via exceljs)
@@ -94,6 +94,20 @@ ai-vision  decide                      (project's own OpenAI-compatible endpoint
 
 Every step also accepts `timeoutMs`, `retry`, `retryDelayMs`, `continueOnError`, `delayBeforeMs`,
 `delayAfterMs` and (for reads) `saveAs`.
+
+`web.extractTable` reads a whole table in one round-trip — `{ "table": "#orders", "headerRow": true,
+"saveAs": "rows" }` stores header-keyed rows, sets `${rows.count}`, and fails naming the selector when
+no table matches.
+
+`control.log` takes `fields`, a map interpolated onto the log line and shipped to the orchestrator in
+the same batch:
+
+```jsonc
+{ "type": "control", "action": "log", "message": "processing ${TransactionItem.id}",
+  "fields": { "process": "${Config.ProcessName}", "transaction": "${TransactionItem.id}" } }
+```
+
+prints `[info] {process=Invoice, transaction=tx-1} processing tx-1`.
 
 ### Targeting
 
@@ -166,7 +180,7 @@ rpa robot …                    connect to Aro and take dispatched flows
 | Orchestrator | **Aro**: robots, flows, dispatch, logs, assets — this repo is the robot |
 | Queues | local `queue.*` with dispatcher/performer semantics; an Aro queue service is the next orchestrator feature |
 | Credentials | `${secret.NAME}` resolved once before step 1 (Aro's asset vault on a robot) |
-| Still open | table extraction (`web.extractTable`), structured log fields, packages, a full recorder, ML document understanding (use OCR + regex) |
+| Still open | packages, a full recorder, ML document understanding (use OCR + regex) |
 
 ## Tests
 

@@ -18,6 +18,14 @@ const PAGE = `<!doctype html><html><body>
   <label for="p">Password</label><input id="p" type="password">
   <button id="submit" class="btn primary" aria-label="Sign in to continue">Sign in</button>
   <ul id="items"><li>alpha</li><li>beta</li></ul>
+  <table id="orders">
+    <thead><tr><th>Name</th><th>Qty</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>Ada Lovelace</td><td>2</td><td>first</td></tr>
+      <tr><td>Alan Turing</td><td>3</td><td>second</td></tr>
+      <tr><td>Grace Hopper</td><td>5</td><td>third</td></tr>
+    </tbody>
+  </table>
   <div id="late"></div>
   <script>
     document.getElementById('submit').addEventListener('click', () => {
@@ -131,6 +139,48 @@ test('an anchor disambiguates two identical inputs', { skip: !available ? 'no ch
     })));
     assert.equal(result.status, 'Passed', result.error);
     assert.equal(result.vars.uvalue, 'anchored');
+  });
+});
+
+test('web.extractTable reads a real table into header-keyed rows', { skip: !available ? 'no chromium on this host' : false }, async () => {
+  await withServer(async (base) => {
+    const engine = new Engine({ headless: true, variables: { base } });
+    const result = await engine.run(parseWorkflow(JSON.stringify({
+      steps: [
+        { type: 'web', action: 'goto', url: '${base}/' },
+        { type: 'web', action: 'extractTable', table: '#orders', saveAs: 'rows' },
+        { type: 'control', action: 'log', message: 'orders=${rows.count}' },
+        // no header row: the columns are keyed by their index instead
+        { type: 'web', action: 'extractTable', table: '#orders', headerRow: false, saveAs: 'raw' },
+        // a tag selector works the same way
+        { type: 'web', action: 'extractTable', table: 'table', headerRow: false, saveAs: 'again' }
+      ]
+    })));
+
+    assert.equal(result.status, 'Passed', result.error);
+    const rows = JSON.parse(String(result.vars.rows)) as Array<Record<string, string>>;
+    assert.equal(rows.length, 3, 'the header row is not a data row');
+    assert.deepEqual(rows[0], { Name: 'Ada Lovelace', Qty: '2', Note: 'first' });
+    assert.deepEqual(rows[2], { Name: 'Grace Hopper', Qty: '5', Note: 'third' });
+    assert.equal(result.vars['rows.count'], '3');
+    assert.ok(result.logs.some((line) => line.message === 'orders=3'), 'the count reaches a later step');
+    assert.equal((JSON.parse(String(result.vars.raw)) as unknown[]).length, 4, 'headerRow:false keeps every row');
+    assert.ok(result.logs.some((line) => line.message.includes('extractTable #orders → 3 row(s), 3 column(s)')),
+      result.logs.map((l) => l.message).join(' | '));
+  });
+});
+
+test('web.extractTable fails naming the selector when no table matches', { skip: !available ? 'no chromium on this host' : false }, async () => {
+  await withServer(async (base) => {
+    const engine = new Engine({ headless: true, variables: { base } });
+    const result = await engine.run(parseWorkflow(JSON.stringify({
+      steps: [
+        { type: 'web', action: 'goto', url: '${base}/' },
+        { type: 'web', action: 'extractTable', table: '#no-such-table', timeoutMs: 1000 }
+      ]
+    })));
+    assert.equal(result.status, 'Failed');
+    assert.match(result.error ?? '', /no table matched "#no-such-table"/);
   });
 });
 

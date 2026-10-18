@@ -100,8 +100,9 @@ Ordered by what a personal tool notices first. Nothing here is blocked on Aro.
 | Google Sheets / WebAPI / human-in-the-loop | closed: `gsheet.*`, `api.request`, `hitl.ask` | here (Sheets REST) / file-based HITL |
 | State machine | closed: `control.stateMachine` | here |
 | Windows UIA | partial: `desktop.uia` over PowerShell UIAutomation, Windows hosts only | here |
+| Table extraction | closed: `web.extractTable` — header-keyed rows in one page round-trip | here |
+| Structured log fields | closed: `control.log.fields` on the `LogLine`, printed `{k=v}` and shipped to Aro | here |
 | Document Understanding | open: needs trained models; OCR + regex is the substitute | out of scope |
-| Structured log fields (`Add Log Fields`) | open: needs a logging model | here |
 | Full recorder | `rpa pick` indicates one element; a recorder captures a session | here: convert a Playwright trace into steps |
 | Packages (versioned, signed) | Workflows are plain JSON; a package format pays off for sharing | here, if workflows ever leave this machine |
 | Coded workflows (C#) | A code-first authoring mode | not planned — the engine is Node |

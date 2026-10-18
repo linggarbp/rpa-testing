@@ -9,7 +9,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Engine } from '../src/engine.js';
+import { Engine, formatLogLine } from '../src/engine.js';
 import { parseWorkflow, validateWorkflow } from '../src/model.js';
 import { QueueStore } from '../src/store.js';
 
@@ -287,4 +287,31 @@ test('math, switch and numeric comparisons behave (RETryNumber >= MaxRetryNumber
   assert.equal(result.vars.RetryNumber, '3');
   assert.ok(messages(result).some((line) => line === 'over the cap'));
   assert.ok(messages(result).some((line) => line === 'case three'));
+});
+
+// ── Structured log fields ──────────────────────────────────────────────────────────────────────
+
+test('control.log carries interpolated fields on the LogLine and renders them before the message', async () => {
+  const dir = await project();
+  const result = await new Engine({ baseDir: dir }).run(wf([
+    { type: 'control', action: 'setVar', name: 'Config.ProcessName', value: 'Invoice' },
+    { type: 'control', action: 'setVar', name: 'TransactionItem.id', value: 'tx-1' },
+    {
+      type: 'control', action: 'log', message: 'processing ${TransactionItem.id}',
+      fields: { process: '${Config.ProcessName}', transaction: '${TransactionItem.id}' }
+    }
+  ]));
+
+  assert.equal(result.status, 'Passed', result.error);
+  const line = result.logs.find((entry) => entry.message === 'processing tx-1');
+  assert.ok(line, messages(result).join(' | '));
+  assert.deepEqual(line?.fields, { process: 'Invoice', transaction: 'tx-1' });
+  assert.equal(formatLogLine(line!), '[info] {process=Invoice, transaction=tx-1} processing tx-1');
+  // A line without fields is unchanged — no empty braces on every ordinary log line.
+  assert.equal(formatLogLine({ level: 'info', message: 'plain', ts: '' }), '[info] plain');
+});
+
+test('a non-object fields map is refused at validation, not at run time', () => {
+  const errors = validateWorkflow(wf([{ type: 'control', action: 'log', message: 'x', fields: ['a'] }]));
+  assert.ok(errors.some((error) => error.includes('fields must be an object')), errors.join(' | '));
 });

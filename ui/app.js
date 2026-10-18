@@ -591,5 +591,4 @@ $('workflow-picker').onchange = (event) => void loadWorkflow(event.target.value)
 state.catalog = (await api('/api/activities')).catalog;
 renderPalette();
 await loadProject();
-$('pick-url').value = firstGotoUrl();
 switchTab('props');

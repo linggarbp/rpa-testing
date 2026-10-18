@@ -240,8 +240,3 @@ export async function backendReport(): Promise<Array<{ name: DesktopBackendName;
   }
   return rows;
 }
-
-/** Tests probe several backends in one process; the cache would hide the second probe. */
-export function resetBackendCache(): void {
-  cached = undefined;
-}

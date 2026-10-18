@@ -120,6 +120,10 @@ test('the page loads the workflow canvas and runs it from the Run button', { ski
     const { chromium } = await import('playwright');
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    // A startup error leaves the page half-wired (the handlers are attached before the failing
+    // line), so every click still "works" in a test that never looks at the console. Look at it.
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
     try {
       await page.goto(base, { waitUntil: 'domcontentloaded' });
 
@@ -157,7 +161,7 @@ test('the page loads the workflow canvas and runs it from the Run button', { ski
       await page.locator('#queue-table tbody tr').first().locator('select[data-status]').selectOption('Successful');
       await page.locator('#queue-table tbody tr').first().locator('[data-set]').click();
       await page.waitForFunction(() => /Successful: 1/.test(document.querySelector('#queue-counts')?.textContent ?? ''));
-
+      assert.deepEqual(pageErrors, [], 'the page started without errors');
     } finally {
       await browser.close();
     }
